@@ -217,7 +217,7 @@ int fibonacci(int n) {
 
 ## 4. Control Flow
 
-### 4.1 if / else if / else
+### 4.1 if / elif / else
 
 Condition followed by colon, body indented:
 
@@ -225,7 +225,7 @@ Condition followed by colon, body indented:
 x: int = 15
 if x > 20:
     printf("big\n")
-else if x > 10:
+elif x > 10:
     printf("medium\n")
 else:
     printf("small\n")

@@ -2,6 +2,7 @@
 """
 SimplC -> C Transpiler
 Converts a simplified, Python-inspired C dialect into compilable C code.
+Supports stb_ds dynamic arrays and hash maps via arr[T] and map[K,V] syntax.
 """
 
 import re
@@ -37,52 +38,215 @@ class SimplCTranspiler:
     CTYPE_FUNCS = {'isalpha', 'isdigit', 'isalnum', 'isspace', 'isupper',
                    'islower', 'toupper', 'tolower', 'isprint', 'ispunct'}
 
+    # stb_ds macro names that should NOT get semicolons suppressed or mangled
+    STBDS_FUNCS = {
+        'arrput', 'arrpush', 'arrpop', 'arrfree', 'arrlen', 'arrlenu',
+        'arrins', 'arrinsn', 'arrdel', 'arrdeln', 'arrdelswap',
+        'arrsetlen', 'arrsetcap', 'arrcap', 'arraddnptr', 'arraddnindex',
+        'hmput', 'hmputs', 'hmget', 'hmgets', 'hmgetp', 'hmgeti',
+        'hmdel', 'hmlen', 'hmlenu', 'hmfree', 'hmdefault', 'hmdefaults',
+        'hmget_ts', 'hmgeti_ts', 'hmgetp_ts', 'hmgetp_null',
+        'shput', 'shputs', 'shget', 'shgets', 'shgetp', 'shgeti',
+        'shdel', 'shlen', 'shlenu', 'shfree', 'shdefault', 'shdefaults',
+        'shgetp_null', 'sh_new_arena', 'sh_new_strdup',
+        'stbds_rand_seed',
+    }
+
     RESERVED = {'case', 'default', 'goto', 'struct', 'enum', 'union',
                 'typedef', 'extern', 'static', 'register', 'volatile',
                 'const', 'return', 'if', 'else', 'while', 'for',
-                'switch', 'do', 'break', 'continue', 'fn'}
+                'switch', 'do', 'break', 'continue', 'fn', 'del'}
 
     def __init__(self):
         self.needed_includes = set()
-        self.struct_names = set()  # track defined struct names for type resolution
+        self.struct_names = set()
+        self.map_decls = {}        # var_name -> (key_type, val_type, struct_name, is_string_key)
+        self.arr_decls = set()     # var names declared as arr[T]
+        self.generated_map_structs = {}  # struct_name -> typedef line
+
+    # ── type helpers ──────────────────────────────────────────────
+
+    def _sanitize_struct_tag(self, raw: str) -> str:
+        """Turn a C type like 'char *' into a safe identifier fragment."""
+        return raw.replace(' ', '').replace('*', 'ptr').replace('[', '_').replace(']', '_')
 
     def resolve_type(self, raw_type: str) -> str:
+        # arr[T] → T *
+        arr_m = re.match(r'^arr\[(.+)\]$', raw_type.strip())
+        if arr_m:
+            inner = self.resolve_type(arr_m.group(1).strip())
+            if inner.endswith('*'):
+                return inner + '*'
+            return inner + ' *'
+
+        # map[K,V] → handled elsewhere (we return the generated struct ptr)
+        map_m = re.match(r'^map\[(.+?),\s*(.+)\]$', raw_type.strip())
+        if map_m:
+            key_t = self.resolve_type(map_m.group(1).strip())
+            val_t = self.resolve_type(map_m.group(2).strip())
+            sname = self._map_struct_name(key_t, val_t)
+            self._ensure_map_struct(key_t, val_t, sname)
+            return sname + ' *'
+
         arr_match = re.match(r'^(.+?)(\[.+\])$', raw_type.strip())
         if arr_match:
             return self.resolve_type(arr_match.group(1)) + arr_match.group(2)
         if raw_type.endswith('*'):
-            return self.resolve_type(raw_type[:-1].strip()) + ' *'
+            base = self.resolve_type(raw_type[:-1].strip())
+            if base.endswith('*'):
+                return base + '*'
+            return base + ' *'
         stripped = raw_type.strip()
         if stripped in self.STDINT_TYPES:
             self.needed_includes.add('stdint')
             return self.STDINT_TYPES[stripped]
         if stripped == 'bool':
             self.needed_includes.add('stdbool')
-        # Recognize user-defined struct types
         if stripped in self.struct_names:
             return stripped
         return stripped
 
+    def _map_struct_name(self, key_type: str, val_type: str) -> str:
+        return '__map_' + self._sanitize_struct_tag(key_type) + '_' + self._sanitize_struct_tag(val_type)
+
+    def _is_string_key(self, key_type: str) -> bool:
+        return key_type.strip() in ('char *', 'char*')
+
+    def _ensure_map_struct(self, key_type: str, val_type: str, struct_name: str):
+        if struct_name not in self.generated_map_structs:
+            self.generated_map_structs[struct_name] = (
+                f'typedef struct {{ {key_type} key; {val_type} value; }} {struct_name};'
+            )
+            self.needed_includes.add('stb_ds')
+
+    # ── auto-include detection ────────────────────────────────────
+
     def detect_auto_includes(self, code: str):
         ids = set(re.findall(r'\b([a-zA-Z_]\w*)\s*\(', code))
         words = set(re.findall(r'\b([a-zA-Z_]\w*)\b', code))
-        if ids & self.STDIO_FUNCS: self.needed_includes.add('stdio')
-        if ids & self.STDLIB_FUNCS: self.needed_includes.add('stdlib')
-        if ids & self.STRING_FUNCS: self.needed_includes.add('string')
-        if ids & self.MATH_FUNCS: self.needed_includes.add('math')
+        if ids & self.STDIO_FUNCS:   self.needed_includes.add('stdio')
+        if ids & self.STDLIB_FUNCS:  self.needed_includes.add('stdlib')
+        if ids & self.STRING_FUNCS:  self.needed_includes.add('string')
+        if ids & self.MATH_FUNCS:    self.needed_includes.add('math')
         if words & self.BOOL_KEYWORDS: self.needed_includes.add('stdbool')
-        if ids & self.ASSERT_FUNCS: self.needed_includes.add('assert')
-        if ids & self.CTYPE_FUNCS: self.needed_includes.add('ctype')
+        if ids & self.ASSERT_FUNCS:  self.needed_includes.add('assert')
+        if ids & self.CTYPE_FUNCS:   self.needed_includes.add('ctype')
+        if ids & self.STBDS_FUNCS:   self.needed_includes.add('stb_ds')
+        # arr[] / map[] in source also trigger stb_ds
+        if re.search(r'\barr\[', code) or re.search(r'\bmap\[', code):
+            self.needed_includes.add('stb_ds')
+
+    # ── utility ───────────────────────────────────────────────────
 
     def _split_args(self, s: str) -> list:
         depth = 0; parts = []; cur = []
         for ch in s:
-            if ch == '(': depth += 1; cur.append(ch)
-            elif ch == ')': depth -= 1; cur.append(ch)
+            if ch in '([': depth += 1; cur.append(ch)
+            elif ch in ')]': depth -= 1; cur.append(ch)
             elif ch == ',' and depth == 0: parts.append(''.join(cur)); cur = []
             else: cur.append(ch)
         if cur: parts.append(''.join(cur))
         return parts
+
+    def _find_bracket_expr(self, s: str, start: int) -> str | None:
+        """Given s[start] == '[', return contents up to matching ']'."""
+        if start >= len(s) or s[start] != '[':
+            return None
+        depth = 0
+        i = start
+        while i < len(s):
+            if s[i] == '[': depth += 1
+            elif s[i] == ']':
+                depth -= 1
+                if depth == 0:
+                    return s[start+1:i]
+            i += 1
+        return None
+
+    # ── transform: map put  (name[key] = val) ────────────────────
+
+    def try_map_put(self, s):
+        """Match: mapvar[key_expr] = value_expr"""
+        m = re.match(r'^(\s*)(\w+)\[', s)
+        if not m:
+            return None
+        indent, name = m.group(1), m.group(2)
+        if name not in self.map_decls:
+            return None
+        # find the bracket expression
+        bracket_start = m.end() - 1  # position of '['
+        key_expr = self._find_bracket_expr(s, bracket_start)
+        if key_expr is None:
+            return None
+        rest_start = bracket_start + len(key_expr) + 2  # past the ']'
+        rest = s[rest_start:].strip()
+        if not rest.startswith('='):
+            return None
+        val_expr = rest[1:].strip()
+        is_str = self.map_decls[name][3]
+        func = 'shput' if is_str else 'hmput'
+        return (f'{indent}{func}({name}, {key_expr.strip()}, {val_expr})', False)
+
+    # ── transform: del name[key] ─────────────────────────────────
+
+    def try_map_del(self, s):
+        m = re.match(r'^(\s*)del\s+(\w+)\[', s)
+        if not m:
+            return None
+        indent, name = m.group(1), m.group(2)
+        if name not in self.map_decls:
+            return None
+        bracket_start = s.index('[', m.start(2))
+        key_expr = self._find_bracket_expr(s, bracket_start)
+        if key_expr is None:
+            return None
+        is_str = self.map_decls[name][3]
+        func = 'shdel' if is_str else 'hmdel'
+        return (f'{indent}{func}({name}, {key_expr.strip()})', False)
+
+    # ── inline rewriting: map[key] reads in expressions ──────────
+
+    def rewrite_map_gets(self, line: str) -> str:
+        """Replace mapvar[expr] with shget/hmget(mapvar, expr) in rvalue positions.
+
+        We skip any occurrence where mapvar[...] is on the LHS of '=' (handled by try_map_put).
+        """
+        for var, (kt, vt, sn, is_str) in self.map_decls.items():
+            func = 'shget' if is_str else 'hmget'
+            # We need to handle nested brackets, so we can't just use a simple regex.
+            # Iterate and replace from right to left to preserve positions.
+            result = line
+            search_start = 0
+            replacements = []
+            while True:
+                idx = result.find(var + '[', search_start)
+                if idx == -1:
+                    break
+                # make sure it's a word boundary before var
+                if idx > 0 and (result[idx-1].isalnum() or result[idx-1] == '_'):
+                    search_start = idx + len(var)
+                    continue
+                bracket_pos = idx + len(var)
+                key_expr = self._find_bracket_expr(result, bracket_pos)
+                if key_expr is None:
+                    search_start = bracket_pos + 1
+                    continue
+                end_pos = bracket_pos + len(key_expr) + 2  # after ']'
+                # If followed by '.' it's struct field access on the underlying
+                # array (e.g. scores[i].key during iteration), not a map lookup.
+                if end_pos < len(result) and result[end_pos] == '.':
+                    search_start = end_pos
+                    continue
+                replacements.append((idx, end_pos, f'{func}({var}, {key_expr.strip()})'))
+                search_start = end_pos
+
+            # Apply replacements in reverse order
+            for start, end, repl in reversed(replacements):
+                result = result[:start] + repl + result[end:]
+            line = result
+        return line
+
+    # ── transform: function definition ────────────────────────────
 
     def try_function(self, s):
         m = re.match(r'^(\s*)fn\s+(\w+)\s*\(([^)]*)\)\s*->\s*(\S+)\s*:\s*$', s)
@@ -100,6 +264,8 @@ class SimplCTranspiler:
                     else: cp.append(f'{pt} {pn}')
                 else: cp.append(p)
         return (f'{indent}{ret} {name}({", ".join(cp)})', True)
+
+    # ── transform: for-range ──────────────────────────────────────
 
     def try_for_range(self, s):
         m = re.match(r'^(\s*)for\s+(\w+)\s+in\s+range\((.+)\)\s*:\s*$', s)
@@ -119,8 +285,10 @@ class SimplCTranspiler:
         cmp = '>' if neg else '<'
         return (f'{indent}for (int {var} = {start}; {var} {cmp} {end}; {inc})', True)
 
+    # ── transform: else-if / else ─────────────────────────────────
+
     def try_else_if(self, s):
-        m = re.match(r'^(\s*)else\s+if\s+(.+):\s*$', s)
+        m = re.match(r'^(\s*)elif\s+(.+):\s*$', s)
         if not m: return None
         return (f'{m.group(1)}else if ({m.group(2).strip()})', 'else_block')
 
@@ -128,6 +296,8 @@ class SimplCTranspiler:
         m = re.match(r'^(\s*)else\s*:\s*$', s)
         if not m: return None
         return (f'{m.group(1)}else', 'else_block')
+
+    # ── transform: if / while / switch ────────────────────────────
 
     def try_control(self, s):
         m = re.match(r'^(\s*)(if|while|switch)\s+(.+):\s*$', s)
@@ -139,24 +309,75 @@ class SimplCTranspiler:
         if not m: return None
         return (f'{m.group(1)}for ({m.group(2).strip()})', True)
 
+    # ── transform: variable declarations ──────────────────────────
+
     def try_variable(self, s):
+        # name: type = value
         m = re.match(r'^(\s*)(\w+)\s*:\s*(.+?)\s*=\s*(.+)$', s)
         if m:
             indent, name, raw, val = m.group(1), m.group(2), m.group(3).strip(), m.group(4).strip()
             if name in self.RESERVED: return None
+
+            # ── arr[T] declaration ──
+            arr_m = re.match(r'^arr\[(.+)\]$', raw)
+            if arr_m:
+                elem_t = self.resolve_type(arr_m.group(1).strip())
+                self.arr_decls.add(name)
+                self.needed_includes.add('stb_ds')
+                if elem_t.endswith('*'):
+                    return (f'{indent}{elem_t}*{name} = {val}', False)
+                return (f'{indent}{elem_t} *{name} = {val}', False)
+
+            # ── map[K, V] declaration ──
+            map_m = re.match(r'^map\[(.+?),\s*(.+)\]$', raw)
+            if map_m:
+                key_t = self.resolve_type(map_m.group(1).strip())
+                val_t = self.resolve_type(map_m.group(2).strip())
+                sname = self._map_struct_name(key_t, val_t)
+                self._ensure_map_struct(key_t, val_t, sname)
+                is_str = self._is_string_key(key_t)
+                self.map_decls[name] = (key_t, val_t, sname, is_str)
+                return (f'{indent}{sname} *{name} = {val}', False)
+
+            # ── normal variable ──
             ct = self.resolve_type(raw)
             arr = re.match(r'^(.+?)(\[.+\])$', ct)
             if arr: return (f'{indent}{arr.group(1)} {name}{arr.group(2)} = {val}', False)
             return (f'{indent}{ct} {name} = {val}', False)
+
+        # name: type  (no initializer)
         m = re.match(r'^(\s*)(\w+)\s*:\s*(\S+)\s*$', s)
         if m:
             indent, name, raw = m.group(1), m.group(2), m.group(3).strip()
             if name in self.RESERVED: return None
+
+            arr_m = re.match(r'^arr\[(.+)\]$', raw)
+            if arr_m:
+                elem_t = self.resolve_type(arr_m.group(1).strip())
+                self.arr_decls.add(name)
+                self.needed_includes.add('stb_ds')
+                if elem_t.endswith('*'):
+                    return (f'{indent}{elem_t}*{name}', False)
+                return (f'{indent}{elem_t} *{name}', False)
+
+            map_m = re.match(r'^map\[(.+?),\s*(.+)\]$', raw)
+            if map_m:
+                key_t = self.resolve_type(map_m.group(1).strip())
+                val_t = self.resolve_type(map_m.group(2).strip())
+                sname = self._map_struct_name(key_t, val_t)
+                self._ensure_map_struct(key_t, val_t, sname)
+                is_str = self._is_string_key(key_t)
+                self.map_decls[name] = (key_t, val_t, sname, is_str)
+                return (f'{indent}{sname} *{name}', False)
+
             ct = self.resolve_type(raw)
             arr = re.match(r'^(.+?)(\[.+\])$', ct)
             if arr: return (f'{indent}{arr.group(1)} {name}{arr.group(2)}', False)
             return (f'{indent}{ct} {name}', False)
+
         return None
+
+    # ── transform: print() shorthand ──────────────────────────────
 
     def try_print(self, s):
         m = re.match(r'^(\s*)print\((.+)\)\s*$', s)
@@ -167,8 +388,9 @@ class SimplCTranspiler:
             return (f'{indent}printf("{inner}\\n")', False)
         return (f'{indent}printf({args})', False)
 
+    # ── transform: struct definition ──────────────────────────────
+
     def try_struct(self, s):
-        """Match: struct Ball:"""
         m = re.match(r'^(\s*)struct\s+(\w+)\s*:\s*$', s)
         if not m: return None
         indent, name = m.group(1), m.group(2)
@@ -176,7 +398,6 @@ class SimplCTranspiler:
         return (f'{indent}typedef struct {name}', 'struct_block', name)
 
     def try_struct_field(self, s):
-        """Match struct fields like: x: int,  or  speed: double"""
         indent = ' ' * (len(s) - len(s.lstrip()))
         stripped = s.strip().rstrip(',')
         m = re.match(r'^(\w+)\s*:\s*(.+)$', stripped)
@@ -189,24 +410,38 @@ class SimplCTranspiler:
         return f'{indent}{ct} {name};'
 
     def _pre_scan_structs(self, source: str):
-        """Pre-scan to collect struct names so resolve_type can recognize them."""
         for m in re.finditer(r'^[ \t]*struct\s+(\w+)\s*:', source, re.MULTILINE):
             self.struct_names.add(m.group(1))
+
+    # ── main transpile ────────────────────────────────────────────
 
     def transpile(self, source: str) -> str:
         self.needed_includes = set()
         self.struct_names = set()
+        self.map_decls = {}
+        self.arr_decls = set()
+        self.generated_map_structs = {}
         self._pre_scan_structs(source)
         self.detect_auto_includes(source)
 
-        transforms = [self.try_function, self.try_for_range, self.try_else_if,
-                       self.try_else, self.try_control, self.try_for_plain,
-                       self.try_variable, self.try_print]
+        # Order matters: map_put and map_del must come before try_variable
+        # so that `scores["x"] = 5` isn't misread as a variable decl.
+        transforms = [
+            self.try_map_del,
+            self.try_map_put,
+            self.try_function,
+            self.try_for_range,
+            self.try_else_if,
+            self.try_else,
+            self.try_control,
+            self.try_for_plain,
+            self.try_variable,
+            self.try_print,
+        ]
 
         lines = source.splitlines()
         output = []
-        block_indents = []  # stack of (indent_level, block_type)
-        # block_type: 'code' or ('struct', name)
+        block_indents = []
 
         for line in lines:
             stripped = line.rstrip()
@@ -228,7 +463,6 @@ class SimplCTranspiler:
             in_struct = block_indents and isinstance(block_indents[-1][1], tuple) and block_indents[-1][1][0] == 'struct'
 
             if in_struct:
-                # Process as struct field
                 field = self.try_struct_field(stripped)
                 if field:
                     output.append(field)
@@ -244,7 +478,31 @@ class SimplCTranspiler:
                 block_indents.append((indent, ('struct', sname)))
                 continue
 
-            # Try other transforms
+            # Rewrite inline map gets BEFORE other transforms so that
+            # expressions like printf("%d", scores["alice"]) work.
+            # But skip lines that are pure map puts (starts with mapvar[)
+            # since try_map_put handles those.
+            skip_map_rewrite = False
+
+            # Skip rewriting for map put lines: mapvar[key] = val
+            put_m = re.match(r'^\s*(\w+)\[', stripped)
+            if put_m and put_m.group(1) in self.map_decls:
+                bpos = stripped.index('[', put_m.start(1))
+                kexpr = self._find_bracket_expr(stripped, bpos)
+                if kexpr is not None:
+                    after = stripped[bpos + len(kexpr) + 2:].strip()
+                    if after.startswith('='):
+                        skip_map_rewrite = True
+
+            # Skip rewriting for del lines: del mapvar[key]
+            del_m = re.match(r'^\s*del\s+(\w+)\[', stripped)
+            if del_m and del_m.group(1) in self.map_decls:
+                skip_map_rewrite = True
+
+            if not skip_map_rewrite:
+                stripped = self.rewrite_map_gets(stripped)
+
+            # Try transforms
             result = None
             for t in transforms:
                 result = t(stripped)
@@ -253,6 +511,9 @@ class SimplCTranspiler:
 
             if result is not None:
                 text, is_block = result
+                # Rewrite map gets in the transformed text too (for expressions inside)
+                if not skip_map_rewrite:
+                    text = self.rewrite_map_gets(text)
                 if is_block == 'else_block':
                     if output and output[-1].strip() == '}':
                         prev = output[-1]
@@ -266,6 +527,8 @@ class SimplCTranspiler:
                 else:
                     output.append(self._semi(text))
             else:
+                # Rewrite any remaining map gets in passthrough lines
+                stripped = self.rewrite_map_gets(stripped)
                 output.append(self._semi(stripped))
 
         while block_indents:
@@ -277,7 +540,11 @@ class SimplCTranspiler:
 
         text = '\n'.join(output)
         inc = self._build_includes()
-        return (inc + '\n\n' + text) if inc else text
+        structs = self._build_map_structs()
+        preamble = '\n'.join(filter(None, [inc, structs]))
+        return (preamble + '\n\n' + text) if preamble else text
+
+    # ── semicolon insertion ───────────────────────────────────────
 
     def _semi(self, line: str) -> str:
         s = line.strip()
@@ -285,17 +552,32 @@ class SimplCTranspiler:
         if '=' in s and s.endswith('}'):
             return line + ';'
         if (s.startswith('#') or s.startswith('//') or s.startswith('/*') or
-            s.startswith('*') or s.endswith('{') or s.endswith('}') or
+            (s.startswith('*') and (len(s) == 1 or not s[1].isalnum())) or
+            s.endswith('{') or s.endswith('}') or
             s.startswith('}') or s.endswith(',') or s.endswith('\\') or
             s.endswith(';')):
             return line
         return line + ';'
 
+    # ── include / struct emission ─────────────────────────────────
+
     def _build_includes(self) -> str:
-        m = {'stdio': 'stdio', 'stdlib': 'stdlib', 'string': 'string',
-             'math': 'math', 'stdint': 'stdint', 'stdbool': 'stdbool',
-             'assert': 'assert', 'ctype': 'ctype'}
-        return '\n'.join(f'#include <{m[k]}.h>' for k in sorted(self.needed_includes) if k in m)
+        std_map = {'stdio': 'stdio', 'stdlib': 'stdlib', 'string': 'string',
+                   'math': 'math', 'stdint': 'stdint', 'stdbool': 'stdbool',
+                   'assert': 'assert', 'ctype': 'ctype'}
+        lines = []
+        for k in sorted(self.needed_includes):
+            if k in std_map:
+                lines.append(f'#include <{std_map[k]}.h>')
+        if 'stb_ds' in self.needed_includes:
+            lines.append('#define STB_DS_IMPLEMENTATION')
+            lines.append('#include "stb_ds.h"')
+        return '\n'.join(lines)
+
+    def _build_map_structs(self) -> str:
+        if not self.generated_map_structs:
+            return ''
+        return '\n'.join(self.generated_map_structs.values())
 
 
 def main():
