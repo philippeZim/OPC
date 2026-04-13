@@ -464,41 +464,39 @@ The transpiler auto-emits `#define STB_DS_IMPLEMENTATION` and `#include "stb_ds.
 
 ### 6.2 Operations
 
-All stb_ds array macros work directly — they pass through as-is:
-
 ```python
 fn main() -> int:
     nums: arr[int] = NULL
 
     // Append
-    arrput(nums, 10)
-    arrput(nums, 20)
-    arrput(nums, 30)
-    arrput(nums, 40)
+    nums.append(10)
+    nums.append(20)
+    nums.append(30)
+    nums.append(40)
 
     // Length
-    printf("length: %ld\n", arrlen(nums))
+    printf("length: %ld\n", len(nums))
 
     // Iterate (normal array indexing)
-    for i in range(arrlen(nums)):
+    for i in range(len(nums)):
         printf("nums[%d] = %d\n", i, nums[i])
 
     // Pop last element
-    last: int = arrpop(nums)
+    last: int = nums.pop()
 
     // Insert at index
-    arrins(nums, 1, 99)
+    nums.insert(1, 99)
 
     // Delete at index
-    arrdel(nums, 0)
+    del nums[0]
 
-    // Pre-allocate capacity
+    // Pre-allocate capacity (raw stb_ds macro, no Pythonic wrapper)
     big: arr[double] = NULL
     arrsetcap(big, 1000)
 
     // Free
-    arrfree(nums)
-    arrfree(big)
+    nums.free()
+    big.free()
     return 0
 ```
 
@@ -536,6 +534,8 @@ int main() {
 }
 ```
 
+`len()` works anywhere in an expression — inside `range()`, conditions, assignments.
+
 ### 6.3 Array of Structs
 
 ```python
@@ -545,37 +545,37 @@ struct Point:
 
 fn main() -> int:
     points: arr[Point] = NULL
-    arrput(points, ((Point){1, 2}))
-    arrput(points, ((Point){3, 4}))
+    points.append(((Point){1, 2}))
+    points.append(((Point){3, 4}))
 
-    for i in range(arrlen(points)):
+    for i in range(len(points)):
         printf("(%d, %d)\n", points[i].x, points[i].y)
 
-    arrfree(points)
+    points.free()
     return 0
 ```
 
 ### 6.4 Quick Reference
 
-| Operation | Description |
-|-----------|-------------|
-| `arrput(a, val)` | Append value |
-| `arrpop(a)` | Remove & return last element |
-| `arrins(a, i, val)` | Insert at index `i` |
-| `arrdel(a, i)` | Delete at index `i` (shift) |
-| `arrdelswap(a, i)` | Delete at index `i` (swap with last, O(1)) |
-| `arrlen(a)` | Length (`ptrdiff_t`) |
-| `arrlenu(a)` | Length (`size_t`) |
-| `arrsetcap(a, n)` | Pre-allocate capacity |
-| `arrcap(a)` | Current capacity |
-| `arrsetlen(a, n)` | Set length (allocate if needed) |
-| `arrfree(a)` | Free and set to NULL |
+| SimplC | C | Description |
+|--------|---|-------------|
+| `a.append(val)` | `arrput(a, val)` | Append value |
+| `a.pop()` | `arrpop(a)` | Remove & return last element |
+| `a.insert(i, val)` | `arrins(a, i, val)` | Insert at index `i` |
+| `del a[i]` | `arrdel(a, i)` | Delete at index `i` (shift) |
+| `arrdelswap(a, i)` | `arrdelswap(a, i)` | Delete at index `i` (swap with last, O(1)) |
+| `len(a)` | `arrlen(a)` | Length (`ptrdiff_t`) |
+| `arrlenu(a)` | `arrlenu(a)` | Length (`size_t`) |
+| `arrsetcap(a, n)` | `arrsetcap(a, n)` | Pre-allocate capacity |
+| `arrcap(a)` | `arrcap(a)` | Current capacity |
+| `arrsetlen(a, n)` | `arrsetlen(a, n)` | Set length (allocate if needed) |
+| `a.free()` | `arrfree(a)` | Free and set to NULL |
 
 ---
 
 ## 7. Hash Maps — `map[K, V]`
 
-Hash maps also use stb_ds.h. The transpiler auto-generates the backing struct that stb_ds requires.
+Hash maps use stb_ds.h under the hood — all stb_ds details are hidden.
 
 ### 7.1 Declaration
 
@@ -586,134 +586,65 @@ scores: map[char*, int] = NULL
 ages: map[int, double] = NULL
 ```
 
-Transpiles to:
-
-```c
-#define STB_DS_IMPLEMENTATION
-#include "stb_ds.h"
-typedef struct { char * key; int value; } __map_charptr_int;
-typedef struct { int key; double value; } __map_int_double;
-
-__map_charptr_int *scores = NULL;
-__map_int_double *ages = NULL;
-```
-
-The transpiler automatically detects whether the key is `char*` (string hashmap → `sh*` functions) or any other type (binary hashmap → `hm*` functions).
-
-### 7.2 Put — Bracket Assignment
-
-Assign with `map[key] = value`:
+### 7.2 Put, Get, Delete
 
 ```python
-scores["alice"] = 100
+scores["alice"] = 100          // put
 scores["bob"] = 200
-ages[42] = 3.14
+x: int = scores["alice"]       // get
+del scores["bob"]              // delete
 ```
 
-Transpiles to:
-
-```c
-shput(scores, "alice", 100);
-shput(scores, "bob", 200);
-hmput(ages, 42, 3.14);
-```
-
-### 7.3 Get — Bracket Access in Expressions
-
-Read with `map[key]` anywhere in an expression:
+### 7.3 Length, Existence
 
 ```python
-printf("alice: %d\n", scores["alice"])
+printf("count: %d\n", len(scores))
 
-total: int = scores["alice"] + scores["bob"]
-
-if scores["alice"] > 90:
-    printf("high score\n")
-```
-
-Transpiles to:
-
-```c
-printf("alice: %d\n", shget(scores, "alice"));
-
-int total = shget(scores, "alice") + shget(scores, "bob");
-
-if (shget(scores, "alice") > 90) {
-    printf("high score\n");
-}
-```
-
-### 7.4 Delete
-
-**`del map[key]`** removes an entry:
-
-```python
-del scores["bob"]
-del ages[42]
-```
-
-Transpiles to:
-
-```c
-shdel(scores, "bob");
-hmdel(ages, 42);
-```
-
-### 7.5 Default Values
-
-Set what missing keys return:
-
-```python
-config: map[char*, int] = NULL
-shdefault(config, 0)
-config["width"] = 1920
-
-w: int = config["width"]
-missing: int = config["nonexistent"]   // returns 0
-```
-
-Transpiles to:
-
-```c
-__map_charptr_int *config = NULL;
-shdefault(config, 0);
-shput(config, "width", 1920);
-
-int w = shget(config, "width");
-int missing = shget(config, "nonexistent");
-```
-
-For integer-keyed maps, use `hmdefault`:
-
-```python
-ages: map[int, double] = NULL
-hmdefault(ages, -1.0)
-printf("missing: %f\n", ages[9999])   // prints -1.0
-```
-
-### 7.6 Check Key Existence
-
-Use `shgeti` / `hmgeti` — returns the index or `-1`:
-
-```python
-if shgeti(scores, "alice") >= 0:
+if "alice" in scores:
     printf("found\n")
+
+if "dave" not in scores:
+    printf("missing\n")
 ```
 
 Transpiles to:
 
 ```c
+printf("count: %d\n", shlen(scores));
+
 if (shgeti(scores, "alice") >= 0) {
     printf("found\n");
 }
+
+if (shgeti(scores, "dave") < 0) {
+    printf("missing\n");
+}
 ```
 
-### 7.7 Iteration
-
-Iterate by index using `shlen` / `hmlen`. Access the underlying array directly with `.key` and `.value` — the transpiler recognizes `map[i].field` as array access and leaves it alone:
+### 7.4 Default Values
 
 ```python
-for i in range(shlen(scores)):
+config: map[char*, int] = NULL
+config.default(0)
+config["width"] = 1920
+
+missing: int = config["nonexistent"]   // returns 0
+```
+
+Works the same for integer-keyed maps:
+
+```python
+ages: map[int, double] = NULL
+ages.default(-1.0)
+printf("missing: %f\n", ages[9999])   // prints -1.0
+```
+
+### 7.5 Iteration
+
+Iterate by index; access entries with `.key` and `.value`:
+
+```python
+for i in range(len(scores)):
     printf("%s -> %d\n", scores[i].key, scores[i].value)
 ```
 
@@ -725,72 +656,36 @@ for (int i = 0; i < shlen(scores); i++) {
 }
 ```
 
-### 7.8 String Map Modes
-
-stb_ds string maps have different memory management modes. These macros pass through directly:
+### 7.6 Free
 
 ```python
-// Duplicate keys (safe if source strings are freed later)
-names: map[char*, int] = NULL
-sh_new_strdup(names)
-
-// Arena allocation (efficient for insert-only maps)
-tags: map[char*, int] = NULL
-sh_new_arena(tags)
+scores.free()
+ages.free()
 ```
 
-### 7.9 Maps as Function Parameters
+### 7.7 Maps as Function Parameters
 
-Maps work in function signatures — the transpiler resolves `map[K,V]` to the generated struct pointer:
+`map[K,V]` works in function signatures:
 
 ```python
 fn lookup(db: map[char*, int], key: char*) -> int:
     return db[key]
 ```
 
-Transpiles to:
+### 7.8 Quick Reference
 
-```c
-int lookup(__map_charptr_int * db, char * key) {
-    return shget(db, key);
-}
-```
-
-### 7.10 Free
-
-```python
-shfree(scores)      // string-keyed maps
-hmfree(ages)         // any-keyed maps
-```
-
-### 7.11 Quick Reference
-
-**String-keyed maps (`char*` key):**
-
-| SimplC | C |
-|--------|---|
-| `m: map[char*, int] = NULL` | `__map_charptr_int *m = NULL;` |
-| `m["key"] = val` | `shput(m, "key", val);` |
-| `m["key"]` | `shget(m, "key")` |
-| `del m["key"]` | `shdel(m, "key");` |
-| `shlen(m)` | `shlen(m)` |
-| `shgeti(m, "key")` | `shgeti(m, "key")` |
-| `shdefault(m, v)` | `shdefault(m, v);` |
-| `shfree(m)` | `shfree(m);` |
-| `m[i].key` / `m[i].value` | `m[i].key` / `m[i].value` |
-
-**Integer/struct-keyed maps (any non-`char*` key):**
-
-| SimplC | C |
-|--------|---|
-| `m: map[int, double] = NULL` | `__map_int_double *m = NULL;` |
-| `m[42] = val` | `hmput(m, 42, val);` |
-| `m[42]` | `hmget(m, 42)` |
-| `del m[42]` | `hmdel(m, 42);` |
-| `hmlen(m)` | `hmlen(m)` |
-| `hmgeti(m, 42)` | `hmgeti(m, 42)` |
-| `hmdefault(m, v)` | `hmdefault(m, v);` |
-| `hmfree(m)` | `hmfree(m);` |
+| SimplC | Description |
+|--------|-------------|
+| `m: map[K, V] = NULL` | Declare a map |
+| `m[key] = val` | Insert / update |
+| `m[key]` | Get value |
+| `del m[key]` | Delete entry |
+| `len(m)` | Number of entries |
+| `key in m` | True if key exists |
+| `key not in m` | True if key absent |
+| `m.default(val)` | Value for missing keys |
+| `m.free()` | Free the map |
+| `m[i].key` / `m[i].value` | Access entry during iteration |
 
 ---
 
@@ -808,22 +703,22 @@ struct Player:
 fn main() -> int:
     // Array of structs
     players: arr[Player] = NULL
-    arrput(players, ((Player){"Alice", 100, 0.0, 0.0}))
-    arrput(players, ((Player){"Bob", 80, 5.0, 3.0}))
+    players.append(((Player){"Alice", 100, 0.0, 0.0}))
+    players.append(((Player){"Bob", 80, 5.0, 3.0}))
 
-    for i in range(arrlen(players)):
+    for i in range(len(players)):
         printf("%s: hp=%d\n", players[i].name, players[i].health)
 
     // Map for quick lookup by name
     index: map[char*, int] = NULL
-    for i in range(arrlen(players)):
+    for i in range(len(players)):
         index[players[i].name] = i
 
     idx: int = index["Alice"]
     printf("Alice is at index %d\n", idx)
 
     shfree(index)
-    arrfree(players)
+    players.free()
     return 0
 ```
 
@@ -1044,29 +939,28 @@ A word frequency counter combining structs, dynamic arrays, and hash maps:
 ```python
 fn main() -> int:
     freq: map[char*, int] = NULL
-    sh_new_strdup(freq)
-    shdefault(freq, 0)
+    freq.default(0)
 
     words: arr[char*] = NULL
-    arrput(words, "hello")
-    arrput(words, "world")
-    arrput(words, "hello")
-    arrput(words, "foo")
-    arrput(words, "world")
-    arrput(words, "hello")
+    words.append("hello")
+    words.append("world")
+    words.append("hello")
+    words.append("foo")
+    words.append("world")
+    words.append("hello")
 
     // Count frequencies
-    for i in range(arrlen(words)):
+    for i in range(len(words)):
         current: int = freq[words[i]]
         freq[words[i]] = current + 1
 
     // Print results
     printf("Word frequencies:\n")
-    for i in range(shlen(freq)):
+    for i in range(len(freq)):
         printf("  %s: %d\n", freq[i].key, freq[i].value)
 
-    shfree(freq)
-    arrfree(words)
+    freq.free()
+    words.free()
     return 0
 ```
 
@@ -1151,8 +1045,19 @@ For programs using `arr[T]` or `map[K,V]`, place `stb_ds.h` in the same director
 | struct | `struct Name:` | `typedef struct Name {` |
 | print | `print("hi")` | `printf("hi\n");` |
 | dyn array | `a: arr[int] = NULL` | `int *a = NULL;` |
-| map decl | `m: map[char*, int] = NULL` | `__map_charptr_int *m = NULL;` |
-| map put | `m["k"] = v` | `shput(m, "k", v);` |
-| map get | `m["k"]` | `shget(m, "k")` |
-| map del | `del m["k"]` | `shdel(m, "k");` |
-| map iterate | `m[i].key` | `m[i].key` |
+| arr append | `a.append(x)` | `arrput(a, x);` |
+| arr pop | `a.pop()` | `arrpop(a)` |
+| arr insert | `a.insert(i, x)` | `arrins(a, i, x);` |
+| arr delete | `del a[i]` | `arrdel(a, i);` |
+| arr length | `len(a)` | `arrlen(a)` |
+| arr free | `a.free()` | `arrfree(a);` |
+| map decl | `m: map[K, V] = NULL` | typedef + pointer |
+| map put | `m[key] = val` | `shput/hmput` |
+| map get | `m[key]` | `shget/hmget` |
+| map del | `del m[key]` | `shdel/hmdel` |
+| map length | `len(m)` | `shlen/hmlen` |
+| map exists | `key in m` | `shgeti/hmgeti >= 0` |
+| map absent | `key not in m` | `shgeti/hmgeti < 0` |
+| map default | `m.default(val)` | `shdefault/hmdefault` |
+| map free | `m.free()` | `shfree/hmfree` |
+| map iterate | `m[i].key` / `m[i].value` | direct array access |

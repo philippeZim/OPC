@@ -163,6 +163,21 @@ class SimplCTranspiler:
             i += 1
         return None
 
+    def _find_paren_content(self, s: str, start: int):
+        """Given s[start] == '(', return (content, end_pos) or None."""
+        if start >= len(s) or s[start] != '(':
+            return None
+        depth = 0
+        i = start
+        while i < len(s):
+            if s[i] in '([': depth += 1
+            elif s[i] in ')]':
+                depth -= 1
+                if depth == 0:
+                    return (s[start+1:i], i+1)
+            i += 1
+        return None
+
     # ── transform: map put  (name[key] = val) ────────────────────
 
     def try_map_put(self, s):
@@ -187,22 +202,24 @@ class SimplCTranspiler:
         func = 'shput' if is_str else 'hmput'
         return (f'{indent}{func}({name}, {key_expr.strip()}, {val_expr})', False)
 
-    # ── transform: del name[key] ─────────────────────────────────
+    # ── transform: del name[key/index] ───────────────────────────
 
-    def try_map_del(self, s):
+    def try_del(self, s):
         m = re.match(r'^(\s*)del\s+(\w+)\[', s)
         if not m:
             return None
         indent, name = m.group(1), m.group(2)
-        if name not in self.map_decls:
-            return None
         bracket_start = s.index('[', m.start(2))
         key_expr = self._find_bracket_expr(s, bracket_start)
         if key_expr is None:
             return None
-        is_str = self.map_decls[name][3]
-        func = 'shdel' if is_str else 'hmdel'
-        return (f'{indent}{func}({name}, {key_expr.strip()})', False)
+        if name in self.map_decls:
+            is_str = self.map_decls[name][3]
+            func = 'shdel' if is_str else 'hmdel'
+            return (f'{indent}{func}({name}, {key_expr.strip()})', False)
+        if name in self.arr_decls:
+            return (f'{indent}arrdel({name}, {key_expr.strip()})', False)
+        return None
 
     # ── inline rewriting: map[key] reads in expressions ──────────
 
@@ -245,6 +262,155 @@ class SimplCTranspiler:
                 result = result[:start] + repl + result[end:]
             line = result
         return line
+
+    # ── inline rewriting: Pythonic arr methods ────────────────────
+
+    def rewrite_arr_methods(self, line: str) -> str:
+        """Rewrite Pythonic arr syntax to stb_ds macros:
+          len(a)         → arrlen(a)
+          a.append(x)   → arrput(a, x)
+          a.pop()        → arrpop(a)
+          a.insert(i, x) → arrins(a, i, x)
+          a.free()       → arrfree(a)
+        """
+        if not self.arr_decls:
+            return line
+
+        result = line
+
+        # len(arr_var) → arrlen(arr_var)
+        parts = []
+        i = 0
+        while i < len(result):
+            m = re.search(r'\blen\(', result[i:])
+            if not m:
+                parts.append(result[i:])
+                break
+            base = i + m.start()
+            paren = i + m.end() - 1
+            parts.append(result[i:base])
+            pc = self._find_paren_content(result, paren)
+            if pc and pc[0].strip() in self.arr_decls:
+                parts.append(f'arrlen({pc[0]})')
+                i = pc[1]
+            else:
+                parts.append('len(')
+                i = paren + 1
+        result = ''.join(parts)
+
+        # arr_var.method(args) → stb_ds macro
+        METHOD_MAP = {
+            'append': ('arrput',  True),   # arrput(a, x)
+            'insert': ('arrins',  True),   # arrins(a, i, x)
+            'pop':    ('arrpop',  False),  # arrpop(a)
+            'free':   ('arrfree', False),  # arrfree(a)
+        }
+        for var in self.arr_decls:
+            for method, (macro, pass_args) in METHOD_MAP.items():
+                pat = re.compile(rf'\b{re.escape(var)}\.{method}\(')
+                parts = []
+                i = 0
+                while i < len(result):
+                    m = pat.search(result, i)
+                    if not m:
+                        parts.append(result[i:])
+                        break
+                    parts.append(result[i:m.start()])
+                    paren = m.end() - 1
+                    pc = self._find_paren_content(result, paren)
+                    if pc is None:
+                        parts.append(result[m.start():m.end()])
+                        i = m.end()
+                        continue
+                    if pass_args and pc[0].strip():
+                        parts.append(f'{macro}({var}, {pc[0]})')
+                    else:
+                        parts.append(f'{macro}({var})')
+                    i = pc[1]
+                result = ''.join(parts)
+
+        return result
+
+    # ── inline rewriting: Pythonic map methods ───────────────────
+
+    def rewrite_map_methods(self, line: str) -> str:
+        """Rewrite Pythonic map syntax to stb_ds calls:
+          len(m)         → shlen(m) / hmlen(m)
+          key in m       → shgeti(m, key) >= 0 / hmgeti(m, key) >= 0
+          key not in m   → shgeti(m, key) < 0  / hmgeti(m, key) < 0
+          m.default(val) → shdefault(m, val) / hmdefault(m, val)
+          m.free()       → shfree(m) / hmfree(m)
+        """
+        if not self.map_decls:
+            return line
+
+        result = line
+
+        # len(map_var) → shlen(map_var) / hmlen(map_var)
+        parts = []
+        i = 0
+        while i < len(result):
+            m = re.search(r'\blen\(', result[i:])
+            if not m:
+                parts.append(result[i:])
+                break
+            base = i + m.start()
+            paren = i + m.end() - 1
+            parts.append(result[i:base])
+            pc = self._find_paren_content(result, paren)
+            if pc and pc[0].strip() in self.map_decls:
+                var = pc[0].strip()
+                _, _, _, is_str = self.map_decls[var]
+                parts.append(f'{"shlen" if is_str else "hmlen"}({pc[0]})')
+                i = pc[1]
+            else:
+                parts.append('len(')
+                i = paren + 1
+        result = ''.join(parts)
+
+        for var, (kt, vt, sn, is_str) in self.map_decls.items():
+            geti     = 'shgeti'   if is_str else 'hmgeti'
+            free_f   = 'shfree'   if is_str else 'hmfree'
+            default_f = 'shdefault' if is_str else 'hmdefault'
+            vp = re.escape(var)
+
+            # key not in var (must be rewritten before 'in' to avoid double-match)
+            result = re.sub(
+                rf'(\b\w+\b|"[^"]*")\s+not\s+in\s+\b{vp}\b',
+                lambda m, v=var, g=geti: f'{g}({v}, {m.group(1)}) < 0',
+                result
+            )
+            # key in var
+            result = re.sub(
+                rf'(\b\w+\b|"[^"]*")\s+in\s+\b{vp}\b',
+                lambda m, v=var, g=geti: f'{g}({v}, {m.group(1)}) >= 0',
+                result
+            )
+
+            # var.default(val) → shdefault/hmdefault
+            pat = re.compile(rf'\b{vp}\.default\(')
+            parts = []
+            i = 0
+            while i < len(result):
+                m = pat.search(result, i)
+                if not m:
+                    parts.append(result[i:])
+                    break
+                parts.append(result[i:m.start()])
+                paren = m.end() - 1
+                pc = self._find_paren_content(result, paren)
+                if pc is None:
+                    parts.append(result[m.start():m.end()])
+                    i = m.end()
+                    continue
+                parts.append(f'{default_f}({var}, {pc[0]})')
+                i = pc[1]
+            result = ''.join(parts)
+
+            # var.free() → shfree/hmfree
+            result = re.sub(rf'\b{vp}\.free\(\)', f'{free_f}({var})', result)
+
+        return result
 
     # ── transform: function definition ────────────────────────────
 
@@ -424,10 +590,10 @@ class SimplCTranspiler:
         self._pre_scan_structs(source)
         self.detect_auto_includes(source)
 
-        # Order matters: map_put and map_del must come before try_variable
+        # Order matters: try_del and try_map_put must come before try_variable
         # so that `scores["x"] = 5` isn't misread as a variable decl.
         transforms = [
-            self.try_map_del,
+            self.try_del,
             self.try_map_put,
             self.try_function,
             self.try_for_range,
@@ -501,6 +667,9 @@ class SimplCTranspiler:
 
             if not skip_map_rewrite:
                 stripped = self.rewrite_map_gets(stripped)
+            stripped = self.rewrite_arr_methods(stripped)
+            if not skip_map_rewrite:
+                stripped = self.rewrite_map_methods(stripped)
 
             # Try transforms
             result = None
@@ -514,6 +683,9 @@ class SimplCTranspiler:
                 # Rewrite map gets in the transformed text too (for expressions inside)
                 if not skip_map_rewrite:
                     text = self.rewrite_map_gets(text)
+                text = self.rewrite_arr_methods(text)
+                if not skip_map_rewrite:
+                    text = self.rewrite_map_methods(text)
                 if is_block == 'else_block':
                     if output and output[-1].strip() == '}':
                         prev = output[-1]
@@ -527,8 +699,10 @@ class SimplCTranspiler:
                 else:
                     output.append(self._semi(text))
             else:
-                # Rewrite any remaining map gets in passthrough lines
+                # Rewrite any remaining map gets/arr methods in passthrough lines
                 stripped = self.rewrite_map_gets(stripped)
+                stripped = self.rewrite_arr_methods(stripped)
+                stripped = self.rewrite_map_methods(stripped)
                 output.append(self._semi(stripped))
 
         while block_indents:
