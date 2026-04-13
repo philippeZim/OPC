@@ -1,0 +1,9 @@
+struct Point:
+    x: float
+    y: float
+
+fn create_point(x: float, y: float) -> Point:
+    p: Point
+    p.x = x
+    p.y = y
+    return p

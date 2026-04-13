@@ -5,6 +5,7 @@ Converts a simplified, Python-inspired C dialect into compilable C code.
 Supports stb_ds dynamic arrays and hash maps via arr[T] and map[K,V] syntax.
 """
 
+import os
 import re
 import sys
 
@@ -59,10 +60,14 @@ class SimplCTranspiler:
 
     def __init__(self):
         self.needed_includes = set()
+        self.user_imports = set()
         self.struct_names = set()
         self.map_decls = {}        # var_name -> (key_type, val_type, struct_name, is_string_key)
         self.arr_decls = set()     # var names declared as arr[T]
         self.generated_map_structs = {}  # struct_name -> typedef line
+        self.prototypes = []
+        self.struct_definitions = []
+        self.current_struct_lines = []
 
     # ── type helpers ──────────────────────────────────────────────
 
@@ -114,8 +119,12 @@ class SimplCTranspiler:
 
     def _ensure_map_struct(self, key_type: str, val_type: str, struct_name: str):
         if struct_name not in self.generated_map_structs:
+            guard = f"OPC_MAP_{struct_name}"
             self.generated_map_structs[struct_name] = (
-                f'typedef struct {{ {key_type} key; {val_type} value; }} {struct_name};'
+                f'#ifndef {guard}\n'
+                f'#define {guard}\n'
+                f'typedef struct {struct_name} {{ {key_type} key; {val_type} value; }} {struct_name};\n'
+                f'#endif'
             )
             self.needed_includes.add('stb_ds')
 
@@ -224,14 +233,9 @@ class SimplCTranspiler:
     # ── inline rewriting: map[key] reads in expressions ──────────
 
     def rewrite_map_gets(self, line: str) -> str:
-        """Replace mapvar[expr] with shget/hmget(mapvar, expr) in rvalue positions.
-
-        We skip any occurrence where mapvar[...] is on the LHS of '=' (handled by try_map_put).
-        """
+        """Replace mapvar[expr] with shget/hmget(mapvar, expr) in rvalue positions."""
         for var, (kt, vt, sn, is_str) in self.map_decls.items():
             func = 'shget' if is_str else 'hmget'
-            # We need to handle nested brackets, so we can't just use a simple regex.
-            # Iterate and replace from right to left to preserve positions.
             result = line
             search_start = 0
             replacements = []
@@ -239,7 +243,6 @@ class SimplCTranspiler:
                 idx = result.find(var + '[', search_start)
                 if idx == -1:
                     break
-                # make sure it's a word boundary before var
                 if idx > 0 and (result[idx-1].isalnum() or result[idx-1] == '_'):
                     search_start = idx + len(var)
                     continue
@@ -249,15 +252,12 @@ class SimplCTranspiler:
                     search_start = bracket_pos + 1
                     continue
                 end_pos = bracket_pos + len(key_expr) + 2  # after ']'
-                # If followed by '.' it's struct field access on the underlying
-                # array (e.g. scores[i].key during iteration), not a map lookup.
                 if end_pos < len(result) and result[end_pos] == '.':
                     search_start = end_pos
                     continue
                 replacements.append((idx, end_pos, f'{func}({var}, {key_expr.strip()})'))
                 search_start = end_pos
 
-            # Apply replacements in reverse order
             for start, end, repl in reversed(replacements):
                 result = result[:start] + repl + result[end:]
             line = result
@@ -266,13 +266,6 @@ class SimplCTranspiler:
     # ── inline rewriting: Pythonic arr methods ────────────────────
 
     def rewrite_arr_methods(self, line: str) -> str:
-        """Rewrite Pythonic arr syntax to stb_ds macros:
-          len(a)         → arrlen(a)
-          a.append(x)   → arrput(a, x)
-          a.pop()        → arrpop(a)
-          a.insert(i, x) → arrins(a, i, x)
-          a.free()       → arrfree(a)
-        """
         if not self.arr_decls:
             return line
 
@@ -300,10 +293,10 @@ class SimplCTranspiler:
 
         # arr_var.method(args) → stb_ds macro
         METHOD_MAP = {
-            'append': ('arrput',  True),   # arrput(a, x)
-            'insert': ('arrins',  True),   # arrins(a, i, x)
-            'pop':    ('arrpop',  False),  # arrpop(a)
-            'free':   ('arrfree', False),  # arrfree(a)
+            'append': ('arrput',  True),
+            'insert': ('arrins',  True),
+            'pop':    ('arrpop',  False),
+            'free':   ('arrfree', False),
         }
         for var in self.arr_decls:
             for method, (macro, pass_args) in METHOD_MAP.items():
@@ -334,13 +327,6 @@ class SimplCTranspiler:
     # ── inline rewriting: Pythonic map methods ───────────────────
 
     def rewrite_map_methods(self, line: str) -> str:
-        """Rewrite Pythonic map syntax to stb_ds calls:
-          len(m)         → shlen(m) / hmlen(m)
-          key in m       → shgeti(m, key) >= 0 / hmgeti(m, key) >= 0
-          key not in m   → shgeti(m, key) < 0  / hmgeti(m, key) < 0
-          m.default(val) → shdefault(m, val) / hmdefault(m, val)
-          m.free()       → shfree(m) / hmfree(m)
-        """
         if not self.map_decls:
             return line
 
@@ -374,20 +360,17 @@ class SimplCTranspiler:
             default_f = 'shdefault' if is_str else 'hmdefault'
             vp = re.escape(var)
 
-            # key not in var (must be rewritten before 'in' to avoid double-match)
             result = re.sub(
                 rf'(\b\w+\b|"[^"]*")\s+not\s+in\s+\b{vp}\b',
                 lambda m, v=var, g=geti: f'{g}({v}, {m.group(1)}) < 0',
                 result
             )
-            # key in var
             result = re.sub(
                 rf'(\b\w+\b|"[^"]*")\s+in\s+\b{vp}\b',
                 lambda m, v=var, g=geti: f'{g}({v}, {m.group(1)}) >= 0',
                 result
             )
 
-            # var.default(val) → shdefault/hmdefault
             pat = re.compile(rf'\b{vp}\.default\(')
             parts = []
             i = 0
@@ -407,10 +390,18 @@ class SimplCTranspiler:
                 i = pc[1]
             result = ''.join(parts)
 
-            # var.free() → shfree/hmfree
             result = re.sub(rf'\b{vp}\.free\(\)', f'{free_f}({var})', result)
 
         return result
+
+    # ── transform: imports ────────────────────────────────────────
+
+    def try_import(self, s):
+        m = re.match(r'^(\s*)import\s+([a-zA-Z0-9_]+)\s*$', s)
+        if not m: return None
+        indent, name = m.group(1), m.group(2)
+        self.user_imports.add(name)
+        return (f'{indent}#include "{name}.h"', False)
 
     # ── transform: function definition ────────────────────────────
 
@@ -429,7 +420,12 @@ class SimplCTranspiler:
                     if arr: cp.append(f'{arr.group(1)} {pn}{arr.group(2)}')
                     else: cp.append(f'{pt} {pn}')
                 else: cp.append(p)
-        return (f'{indent}{ret} {name}({", ".join(cp)})', True)
+                
+        func_sig = f'{ret} {name}({", ".join(cp)})'
+        if name != 'main':
+            self.prototypes.append(func_sig + ';')
+            
+        return (f'{indent}{func_sig}', True)
 
     # ── transform: for-range ──────────────────────────────────────
 
@@ -484,7 +480,6 @@ class SimplCTranspiler:
             indent, name, raw, val = m.group(1), m.group(2), m.group(3).strip(), m.group(4).strip()
             if name in self.RESERVED: return None
 
-            # ── arr[T] declaration ──
             arr_m = re.match(r'^arr\[(.+)\]$', raw)
             if arr_m:
                 elem_t = self.resolve_type(arr_m.group(1).strip())
@@ -494,7 +489,6 @@ class SimplCTranspiler:
                     return (f'{indent}{elem_t}*{name} = {val}', False)
                 return (f'{indent}{elem_t} *{name} = {val}', False)
 
-            # ── map[K, V] declaration ──
             map_m = re.match(r'^map\[(.+?),\s*(.+)\]$', raw)
             if map_m:
                 key_t = self.resolve_type(map_m.group(1).strip())
@@ -505,7 +499,6 @@ class SimplCTranspiler:
                 self.map_decls[name] = (key_t, val_t, sname, is_str)
                 return (f'{indent}{sname} *{name} = {val}', False)
 
-            # ── normal variable ──
             ct = self.resolve_type(raw)
             arr = re.match(r'^(.+?)(\[.+\])$', ct)
             if arr: return (f'{indent}{arr.group(1)} {name}{arr.group(2)} = {val}', False)
@@ -583,16 +576,19 @@ class SimplCTranspiler:
 
     def transpile(self, source: str) -> str:
         self.needed_includes = set()
+        self.user_imports = set()
         self.struct_names = set()
         self.map_decls = {}
         self.arr_decls = set()
         self.generated_map_structs = {}
+        self.prototypes = []
+        self.struct_definitions = []
+        self.current_struct_lines = []
         self._pre_scan_structs(source)
         self.detect_auto_includes(source)
 
-        # Order matters: try_del and try_map_put must come before try_variable
-        # so that `scores["x"] = 5` isn't misread as a variable decl.
         transforms = [
+            self.try_import,
             self.try_del,
             self.try_map_put,
             self.try_function,
@@ -621,7 +617,15 @@ class SimplCTranspiler:
             while block_indents and indent <= block_indents[-1][0]:
                 lvl, btype = block_indents.pop()
                 if isinstance(btype, tuple) and btype[0] == 'struct':
-                    output.append(' ' * lvl + '} ' + btype[1] + ';')
+                    sname = btype[1]
+                    output.append(' ' * lvl + '} ' + sname + ';')
+                    output.append(f"#endif // OPC_STRUCT_{sname}")
+                    
+                    self.current_struct_lines.append('} ' + sname + ';')
+                    guard = f"OPC_STRUCT_{sname}"
+                    struct_def = "\n".join([f"#ifndef {guard}", f"#define {guard}"] + self.current_struct_lines + [f"#endif"])
+                    self.struct_definitions.append(struct_def)
+                    self.current_struct_lines = []
                 else:
                     output.append(' ' * lvl + '}')
 
@@ -632,25 +636,27 @@ class SimplCTranspiler:
                 field = self.try_struct_field(stripped)
                 if field:
                     output.append(field)
+                    self.current_struct_lines.append("    " + field.lstrip())
                 else:
-                    output.append(self._semi(stripped))
+                    semi_field = self._semi(stripped)
+                    output.append(semi_field)
+                    self.current_struct_lines.append("    " + semi_field.lstrip())
                 continue
 
             # Try struct definition
             sr = self.try_struct(stripped)
             if sr:
                 text, _, sname = sr
+                guard = f"OPC_STRUCT_{sname}"
+                output.append(f"#ifndef {guard}")
+                output.append(f"#define {guard}")
                 output.append(text + ' {')
+                self.current_struct_lines = [text.lstrip() + ' {']
                 block_indents.append((indent, ('struct', sname)))
                 continue
 
-            # Rewrite inline map gets BEFORE other transforms so that
-            # expressions like printf("%d", scores["alice"]) work.
-            # But skip lines that are pure map puts (starts with mapvar[)
-            # since try_map_put handles those.
             skip_map_rewrite = False
 
-            # Skip rewriting for map put lines: mapvar[key] = val
             put_m = re.match(r'^\s*(\w+)\[', stripped)
             if put_m and put_m.group(1) in self.map_decls:
                 bpos = stripped.index('[', put_m.start(1))
@@ -660,7 +666,6 @@ class SimplCTranspiler:
                     if after.startswith('='):
                         skip_map_rewrite = True
 
-            # Skip rewriting for del lines: del mapvar[key]
             del_m = re.match(r'^\s*del\s+(\w+)\[', stripped)
             if del_m and del_m.group(1) in self.map_decls:
                 skip_map_rewrite = True
@@ -680,12 +685,12 @@ class SimplCTranspiler:
 
             if result is not None:
                 text, is_block = result
-                # Rewrite map gets in the transformed text too (for expressions inside)
                 if not skip_map_rewrite:
                     text = self.rewrite_map_gets(text)
                 text = self.rewrite_arr_methods(text)
                 if not skip_map_rewrite:
                     text = self.rewrite_map_methods(text)
+                
                 if is_block == 'else_block':
                     if output and output[-1].strip() == '}':
                         prev = output[-1]
@@ -699,7 +704,6 @@ class SimplCTranspiler:
                 else:
                     output.append(self._semi(text))
             else:
-                # Rewrite any remaining map gets/arr methods in passthrough lines
                 stripped = self.rewrite_map_gets(stripped)
                 stripped = self.rewrite_arr_methods(stripped)
                 stripped = self.rewrite_map_methods(stripped)
@@ -708,12 +712,21 @@ class SimplCTranspiler:
         while block_indents:
             lvl, btype = block_indents.pop()
             if isinstance(btype, tuple) and btype[0] == 'struct':
-                output.append(' ' * lvl + '} ' + btype[1] + ';')
+                sname = btype[1]
+                output.append(' ' * lvl + '} ' + sname + ';')
+                output.append(f"#endif // OPC_STRUCT_{sname}")
+                
+                self.current_struct_lines.append('} ' + sname + ';')
+                guard = f"OPC_STRUCT_{sname}"
+                struct_def = "\n".join([f"#ifndef {guard}", f"#define {guard}"] + self.current_struct_lines + [f"#endif"])
+                self.struct_definitions.append(struct_def)
+                self.current_struct_lines = []
             else:
                 output.append(' ' * lvl + '}')
 
+        has_main = any(re.match(r'^\s*fn\s+main\s*\(', ln) for ln in lines)
         text = '\n'.join(output)
-        inc = self._build_includes()
+        inc = self._build_includes(has_main)
         structs = self._build_map_structs()
         preamble = '\n'.join(filter(None, [inc, structs]))
         return (preamble + '\n\n' + text) if preamble else text
@@ -733,9 +746,9 @@ class SimplCTranspiler:
             return line
         return line + ';'
 
-    # ── include / struct emission ─────────────────────────────────
+    # ── include / struct / header emission ────────────────────────
 
-    def _build_includes(self) -> str:
+    def _build_includes(self, has_main: bool = True) -> str:
         std_map = {'stdio': 'stdio', 'stdlib': 'stdlib', 'string': 'string',
                    'math': 'math', 'stdint': 'stdint', 'stdbool': 'stdbool',
                    'assert': 'assert', 'ctype': 'ctype'}
@@ -743,9 +756,12 @@ class SimplCTranspiler:
         for k in sorted(self.needed_includes):
             if k in std_map:
                 lines.append(f'#include <{std_map[k]}.h>')
+                
         if 'stb_ds' in self.needed_includes:
-            lines.append('#define STB_DS_IMPLEMENTATION')
+            if has_main:
+                lines.append('#define STB_DS_IMPLEMENTATION')
             lines.append('#include "stb_ds.h"')
+            
         return '\n'.join(lines)
 
     def _build_map_structs(self) -> str:
@@ -753,17 +769,77 @@ class SimplCTranspiler:
             return ''
         return '\n'.join(self.generated_map_structs.values())
 
+    def generate_header(self, module_name: str) -> str:
+        guard = re.sub(r'[^A-Za-z0-9_]', '_', module_name).upper() + "_H"
+        lines = [
+            f"#ifndef {guard}",
+            f"#define {guard}",
+            ""
+        ]
+        
+        inc = self._build_includes(has_main=False)
+        if inc:
+            inc_lines = []
+            for ln in inc.splitlines():
+                if ln.strip() != '#define STB_DS_IMPLEMENTATION':
+                    inc_lines.append(ln)
+            if inc_lines:
+                lines.append("\n".join(inc_lines))
+                lines.append("")
+            
+        structs = self._build_map_structs()
+        if structs:
+            lines.append(structs)
+            lines.append("")
+            
+        if self.struct_definitions:
+            lines.append("\n\n".join(self.struct_definitions))
+            lines.append("")
+            
+        if self.prototypes:
+            lines.append("\n".join(self.prototypes))
+            lines.append("")
+            
+        lines.append(f"#endif // {guard}")
+        return "\n".join(lines)
+
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python transpiler.py <input.sc> [output.c]")
+        print("Usage: python transpiler.py <input.sc> [output.c] [--header]")
         sys.exit(1)
-    inf = sys.argv[1]
-    outf = sys.argv[2] if len(sys.argv) > 2 else inf.rsplit('.', 1)[0] + '.c'
-    with open(inf) as f: src = f.read()
+        
+    args = sys.argv[1:]
+    force_header = False
+    if '--header' in args:
+        force_header = True
+        args.remove('--header')
+        
+    if not args:
+        print("Usage: python transpiler.py <input.sc> [output.c] [--header]")
+        sys.exit(1)
+        
+    inf = args[0]
+    outf = args[1] if len(args) > 1 else inf.rsplit('.', 1)[0] + '.c'
+    
+    with open(inf) as f: 
+        src = f.read()
+        
     t = SimplCTranspiler()
-    with open(outf, 'w') as f: f.write(t.transpile(src))
+    c_code = t.transpile(src)
+    
+    with open(outf, 'w') as f: 
+        f.write(c_code)
     print(f"Transpiled {inf} -> {outf}")
+    
+    # Auto-generate header if exported structs/functions exist, or if explicitly requested
+    if force_header or t.prototypes or t.struct_definitions or t.generated_map_structs:
+        base_name = os.path.splitext(os.path.basename(inf))[0]
+        header_code = t.generate_header(base_name)
+        header_out = os.path.splitext(outf)[0] + '.h'
+        with open(header_out, 'w') as f:
+            f.write(header_code)
+        print(f"Generated header -> {header_out}")
 
 if __name__ == '__main__':
     main()

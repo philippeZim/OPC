@@ -1,0 +1,6 @@
+import utils
+
+fn main() -> int:
+    p: Point = create_point(5.0, 10.0)
+    print("Point: %f, %f", p.x, p.y)
+    return 0
