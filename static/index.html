@@ -48,14 +48,21 @@
     <!-- Sidebar -->
     <aside class="sidebar">
       <div class="sidebar-header">
-        <span id="root-name" class="root-name">explorer</span>
-        <div class="sidebar-tools">
-          <button id="btn-side-new" class="icon-btn" title="New file" disabled>📄</button>
-          <button id="btn-side-new-folder" class="icon-btn" title="New folder" disabled>📁</button>
-          <button id="btn-refresh" class="icon-btn" title="Refresh" disabled>⟳</button>
+        <div class="sidebar-header-row" id="sidebar-header-default">
+          <span id="root-name" class="root-name">explorer</span>
+          <div class="sidebar-tools">
+            <button id="btn-side-new" class="icon-btn" title="New file" disabled>📄</button>
+            <button id="btn-side-new-folder" class="icon-btn" title="New folder" disabled>📁</button>
+            <button id="btn-refresh" class="icon-btn" title="Refresh" disabled>⟳</button>
+          </div>
+        </div>
+        <div class="sidebar-header-row selection-bar" id="sidebar-header-selection" hidden>
+          <span class="sel-count"><span id="sel-count">0</span> selected</span>
+          <button id="btn-sel-delete" class="icon-btn" title="Delete (Del)">🗑</button>
+          <button id="btn-sel-clear" class="icon-btn" title="Clear (Esc)">✕</button>
         </div>
       </div>
-      <div id="tree" class="tree"></div>
+      <div id="tree" class="tree" tabindex="0"></div>
       <div id="no-workspace" class="no-workspace">
         <p>No folder open.</p>
         <button id="btn-open-folder-2" class="btn btn-ghost">📂 Open Folder</button>
@@ -120,6 +127,7 @@
   <div id="modal-overlay" class="modal-overlay" hidden>
     <div class="modal">
       <div id="modal-title" class="modal-title">New file</div>
+      <div id="modal-prefix" class="modal-prefix" hidden></div>
       <input id="modal-input" class="modal-input" type="text" autocomplete="off" />
       <div id="modal-message" class="modal-message"></div>
       <div class="modal-actions">
@@ -128,6 +136,9 @@
       </div>
     </div>
   </div>
+
+  <!-- Right-click context menu (file/folder/empty space) -->
+  <div id="ctx-menu" class="ctx-menu" hidden></div>
 
   <!-- Modal: confirm (delete / discard) -->
   <div id="confirm-overlay" class="modal-overlay" hidden>
