@@ -37,6 +37,11 @@ class SimplCTranspiler:
 
     BOOL_KEYWORDS = {'true', 'false', 'bool'}
     ASSERT_FUNCS = {'assert'}
+
+    # opc_io.h file-reading helpers (read_file/read_lines/...). These map to
+    # opc_* runtime calls and auto-include "opc_io.h".
+    OPC_IO_FUNCS = {'read_file', 'read_lines', 'read_files',
+                    'file_close', 'free_lines'}
     CTYPE_FUNCS = {'isalpha', 'isdigit', 'isalnum', 'isspace', 'isupper',
                    'islower', 'toupper', 'tolower', 'isprint', 'ispunct'}
 
@@ -61,6 +66,7 @@ class SimplCTranspiler:
 
     def __init__(self):
         self.needed_includes = set()
+        self.user_funcs = set()
         self.user_imports = set()
         self.struct_names = set()
         self.map_decls = {}        # var_name -> (key_type, val_type, struct_name, is_string_key)
@@ -152,6 +158,13 @@ class SimplCTranspiler:
         if ids & self.ASSERT_FUNCS:  self.needed_includes.add('assert')
         if ids & self.CTYPE_FUNCS:   self.needed_includes.add('ctype')
         if ids & self.STBDS_FUNCS:   self.needed_includes.add('stb_ds')
+        # opc_io builtins are shadowed by any user function of the same name
+        # (e.g. a hand-written `fn read_file(...)`).
+        io_funcs = (ids & self.OPC_IO_FUNCS) - self.user_funcs
+        if io_funcs:                 self.needed_includes.add('opc_io')
+        # read_lines / read_files return stb_ds dynamic arrays.
+        if {'read_lines', 'read_files'} & io_funcs:
+            self.needed_includes.add('stb_ds')
         # list[] / map[] in source also trigger stb_ds
         if re.search(r'\blist\[', code) or re.search(r'\bmap\[', code):
             self.needed_includes.add('stb_ds')
@@ -494,6 +507,67 @@ class SimplCTranspiler:
 
         return result
 
+    # ── inline rewriting: file-reading helpers (opc_io.h) ────────
+
+    def _rewrite_named_call(self, line: str, name: str, builder) -> str:
+        """Replace each top-level call `name(...)` with `builder(inner)`.
+
+        `inner` is the raw text between the matching parentheses. `builder`
+        returns the replacement string, or None to leave the call untouched.
+        Calls preceded by an identifier char or `.` (e.g. `opc_read_file`,
+        `obj.read_file`) are skipped, which also makes this idempotent.
+        """
+        result = line
+        i = 0
+        while True:
+            idx = result.find(name + '(', i)
+            if idx == -1:
+                break
+            prev = result[idx - 1] if idx > 0 else ''
+            if prev.isalnum() or prev in '_.':
+                i = idx + len(name)
+                continue
+            paren = idx + len(name)
+            pc = self._find_paren_content(result, paren)
+            if pc is None:
+                i = paren + 1
+                continue
+            inner, end = pc
+            repl = builder(inner)
+            if repl is None:
+                i = end
+                continue
+            result = result[:idx] + repl + result[end:]
+            i = idx + len(repl)
+        return result
+
+    def rewrite_file_io(self, line: str) -> str:
+        if 'opc_io' not in self.needed_includes:
+            return line
+
+        def read_file(inner):
+            args = [a.strip() for a in self._split_top_level(inner)]
+            if len(args) == 1:
+                # No strategy given → portable sequential default.
+                return f'opc_read_file({args[0]}, "auto")'
+            if len(args) == 2:
+                return f'opc_read_file({args[0]}, {args[1]})'
+            return None
+
+        builtins = [
+            ('read_files', lambda s: f'opc_read_files({s})'),
+            ('read_lines', lambda s: f'opc_read_lines({s})'),
+            ('read_file', read_file),
+            ('free_lines', lambda s: f'opc_free_lines({s})'),
+            ('file_close', lambda s: f'opc_file_close({s})'),
+        ]
+        for name, builder in builtins:
+            # A user-defined `fn name(...)` shadows the builtin of that name.
+            if name in self.user_funcs:
+                continue
+            line = self._rewrite_named_call(line, name, builder)
+        return line
+
     # ── transform: imports ────────────────────────────────────────
 
     def try_import(self, s):
@@ -723,10 +797,15 @@ class SimplCTranspiler:
         for m in re.finditer(r'^[ \t]*struct\s+(\w+)\s*:', source, re.MULTILINE):
             self.struct_names.add(m.group(1))
 
+    def _pre_scan_functions(self, source: str):
+        for m in re.finditer(r'^[ \t]*fn\s+(\w+)\s*\(', source, re.MULTILINE):
+            self.user_funcs.add(m.group(1))
+
     # ── main transpile ────────────────────────────────────────────
 
     def transpile(self, source: str) -> str:
         self.needed_includes = set()
+        self.user_funcs = set()
         self.user_imports = set()
         self.struct_names = set()
         self.map_decls = {}
@@ -736,6 +815,7 @@ class SimplCTranspiler:
         self.struct_definitions = []
         self.current_struct_lines = []
         self._pre_scan_structs(source)
+        self._pre_scan_functions(source)
         self.detect_auto_includes(source)
 
         transforms = [
@@ -826,6 +906,7 @@ class SimplCTranspiler:
             stripped = self.rewrite_arr_methods(stripped)
             if not skip_map_rewrite:
                 stripped = self.rewrite_map_methods(stripped)
+            stripped = self.rewrite_file_io(stripped)
 
             # Try transforms
             result = None
@@ -841,7 +922,8 @@ class SimplCTranspiler:
                 text = self.rewrite_arr_methods(text)
                 if not skip_map_rewrite:
                     text = self.rewrite_map_methods(text)
-                
+                text = self.rewrite_file_io(text)
+
                 if is_block == 'else_block':
                     if output and output[-1].strip() == '}':
                         prev = output[-1]
@@ -858,6 +940,7 @@ class SimplCTranspiler:
                 stripped = self.rewrite_map_gets(stripped)
                 stripped = self.rewrite_arr_methods(stripped)
                 stripped = self.rewrite_map_methods(stripped)
+                stripped = self.rewrite_file_io(stripped)
                 output.append(self._semi(stripped))
 
         while block_indents:
@@ -921,7 +1004,12 @@ class SimplCTranspiler:
             if has_main:
                 lines.append('#define STB_DS_IMPLEMENTATION')
             lines.append('#include "stb_ds.h"')
-            
+
+        # opc_io.h must follow stb_ds.h: its read_lines/read_files helpers use
+        # stb_ds array macros and are guarded by INCLUDE_STB_DS_H.
+        if 'opc_io' in self.needed_includes:
+            lines.append('#include "opc_io.h"')
+
         return '\n'.join(lines)
 
     def _build_map_structs(self) -> str:
@@ -1001,15 +1089,20 @@ def main():
         f.write(c_code)
     print(f"Transpiled {inf} -> {outf}")
 
-    # stb_ds.h is needed whenever list[T]/map[K,V] are used. Ship it next to the
-    # output automatically so the user never has to copy it by hand.
-    if 'stb_ds' in t.needed_includes:
-        bundled = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stb_ds.h')
-        dest = os.path.join(os.path.dirname(os.path.abspath(outf)) or '.', 'stb_ds.h')
+    # Bundled headers (stb_ds.h for list/map, opc_io.h for file reading) are
+    # shipped next to the output automatically so the user never copies them by
+    # hand.
+    out_dir = os.path.dirname(os.path.abspath(outf)) or '.'
+    here = os.path.dirname(os.path.abspath(__file__))
+    for key, header in (('stb_ds', 'stb_ds.h'), ('opc_io', 'opc_io.h')):
+        if key not in t.needed_includes:
+            continue
+        bundled = os.path.join(here, header)
+        dest = os.path.join(out_dir, header)
         if os.path.abspath(bundled) != os.path.abspath(dest):
             if not os.path.exists(dest) or not _same_file(bundled, dest):
                 shutil.copyfile(bundled, dest)
-                print(f"Provided stb_ds.h -> {dest}")
+                print(f"Provided {header} -> {dest}")
     
     # Auto-generate header if exported structs/functions exist, or if explicitly requested
     if force_header or t.prototypes or t.struct_definitions or t.generated_map_structs:

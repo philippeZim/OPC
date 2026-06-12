@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OPC IDE</title>
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" />
+  <!-- CodeMirror core -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css" />
+  <!-- autocomplete (show-hint) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/mode/simple.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/selection/active-line.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/runmode/runmode.min.js"></script>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-name">OPC<span class="brand-dim">IDE</span></span>
+    </div>
+
+    <!-- top menu bar -->
+    <nav class="menubar">
+      <button id="btn-open-folder" class="menu-btn">📂 Open Folder</button>
+      <button id="btn-docs" class="menu-btn">📖 Docs</button>
+    </nav>
+
+    <div class="topbar-center">
+      <span id="active-path" class="active-path">No file open</span>
+      <span id="dirty-dot" class="dirty-dot" title="Unsaved changes" hidden></span>
+    </div>
+
+    <div class="topbar-actions">
+      <button id="btn-save" class="btn btn-ghost" title="Save (Ctrl+S)" disabled>Save</button>
+      <button id="btn-transpile" class="btn btn-ghost" title="Transpile (Ctrl+Enter)" disabled>▸ Transpile</button>
+      <button id="btn-buildrun" class="btn btn-run" title="Transpile, compile & run (Ctrl+B)" disabled>▶ Build &amp; Run</button>
+      <button id="btn-console" class="btn btn-icon" title="Toggle console">⌨</button>
+      <button id="btn-theme" class="btn btn-icon" title="Toggle theme">◐</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span id="root-name" class="root-name">explorer</span>
+        <div class="sidebar-tools">
+          <button id="btn-side-new" class="icon-btn" title="New file" disabled>📄</button>
+          <button id="btn-side-new-folder" class="icon-btn" title="New folder" disabled>📁</button>
+          <button id="btn-refresh" class="icon-btn" title="Refresh" disabled>⟳</button>
+        </div>
+      </div>
+      <div id="tree" class="tree"></div>
+      <div id="no-workspace" class="no-workspace">
+        <p>No folder open.</p>
+        <button id="btn-open-folder-2" class="btn btn-ghost">📂 Open Folder</button>
+      </div>
+    </aside>
+
+    <div class="gutter" id="gutter-left"></div>
+
+    <!-- Editor -->
+    <section class="editor-pane">
+      <div id="tabbar" class="tabbar"></div>
+      <div id="editor-host" class="editor-host">
+        <div id="empty-state" class="empty-state">
+          <div class="empty-logo">{ }</div>
+          <p id="empty-msg">Open a folder to get started.</p>
+          <p class="empty-hint">.opc files get full SimplC syntax highlighting.</p>
+          <button id="btn-open-folder-3" class="btn btn-primary empty-cta">📂 Open Folder</button>
+        </div>
+        <textarea id="editor"></textarea>
+      </div>
+
+      <!-- build & run console -->
+      <div class="gutter-h" id="gutter-console"></div>
+      <section class="console-pane" id="console-pane">
+        <div class="console-toolbar">
+          <span class="console-title">Console</span>
+          <label class="flags-label">flags
+            <input id="compile-flags" class="flags-input" type="text"
+                   value="-Wall -Wextra -lm" spellcheck="false" />
+          </label>
+          <div class="console-btns">
+            <button id="btn-compile" class="btn btn-ghost btn-sm" title="Compile">⚙ Compile</button>
+            <button id="btn-run" class="btn btn-ghost btn-sm" title="Run binary">▷ Run</button>
+            <button id="btn-clear-console" class="icon-btn" title="Clear">⌫</button>
+            <button id="btn-close-console" class="icon-btn" title="Close">✕</button>
+          </div>
+        </div>
+        <div id="console-output" class="console-output"></div>
+      </section>
+    </section>
+
+    <!-- Output panel -->
+    <div class="gutter" id="gutter-right"></div>
+    <section class="output-pane" id="output-pane">
+      <div class="output-header">
+        <span class="output-title">Transpiled C</span>
+        <div class="output-tools">
+          <button id="btn-copy-c" class="icon-btn" title="Copy">⧉</button>
+          <button id="btn-close-output" class="icon-btn" title="Close">✕</button>
+        </div>
+      </div>
+      <div id="output-host" class="output-host">
+        <textarea id="output"></textarea>
+      </div>
+      <div id="output-log" class="output-log" hidden></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <!-- Modal: create file / folder -->
+  <div id="modal-overlay" class="modal-overlay" hidden>
+    <div class="modal">
+      <div id="modal-title" class="modal-title">New file</div>
+      <input id="modal-input" class="modal-input" type="text" autocomplete="off" />
+      <div id="modal-message" class="modal-message"></div>
+      <div class="modal-actions">
+        <button id="modal-cancel" class="btn btn-ghost">Cancel</button>
+        <button id="modal-ok" class="btn btn-primary">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: folder picker -->
+  <div id="picker-overlay" class="modal-overlay" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-title">Open Folder</div>
+      <div id="picker-path" class="picker-path"></div>
+      <div id="picker-list" class="picker-list"></div>
+      <div id="picker-message" class="modal-message"></div>
+      <div class="modal-actions">
+        <button id="picker-cancel" class="btn btn-ghost">Cancel</button>
+        <button id="picker-open" class="btn btn-primary">Open this folder</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Documentation overlay -->
+  <div id="docs-overlay" class="docs-overlay" hidden>
+    <div class="docs-window">
+      <header class="docs-header">
+        <div class="docs-brand">📖 SimplC / OPC Reference</div>
+        <input id="docs-search" class="docs-search" type="text" placeholder="Search topics…" />
+        <button id="docs-close" class="icon-btn" title="Close (Esc)">✕</button>
+      </header>
+      <div class="docs-body">
+        <nav id="docs-nav" class="docs-nav"></nav>
+        <article id="docs-content" class="docs-content"></article>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/opc-mode.js"></script>
+  <script src="/static/opc-hint.js"></script>
+  <script src="/static/docs.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
