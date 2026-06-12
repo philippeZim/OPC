@@ -10,7 +10,7 @@ fn main() -> int:
     fclose(fp)
 
     // Whole file, sequential — the portable default.
-    f: OpcFile = read_file("greeting.txt")
+    f: file = read_file("greeting.txt")
     if !f.ok:
         printf("read failed\n")
         return 1
@@ -18,7 +18,7 @@ fn main() -> int:
     file_close(f)
 
     // Same file, zero-copy memory map — ideal for random access.
-    m: OpcFile = read_file("greeting.txt", "mmap")
+    m: file = read_file("greeting.txt", "mmap")
     printf("mmap saw %ld bytes\n", m.size)
     file_close(m)
 

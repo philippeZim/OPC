@@ -3,7 +3,7 @@ from tests.conftest import assert_runs, assert_transpiles_to
 
 
 def test_read_file_default_strategy(transpile):
-    c = transpile('fn main() -> int:\n    f: OpcFile = read_file("data.bin")\n    return 0\n')
+    c = transpile('fn main() -> int:\n    f: file = read_file("data.bin")\n    return 0\n')
     assert_transpiles_to(c, [
         '#include "opc_io.h"',
         'OpcFile f = opc_read_file("data.bin", "auto");',
@@ -11,7 +11,7 @@ def test_read_file_default_strategy(transpile):
 
 
 def test_read_file_explicit_strategy(transpile):
-    c = transpile('fn main() -> int:\n    f: OpcFile = read_file("data.bin", "mmap")\n    return 0\n')
+    c = transpile('fn main() -> int:\n    f: file = read_file("data.bin", "mmap")\n    return 0\n')
     assert_transpiles_to(c, [
         'opc_read_file("data.bin", "mmap");',
     ])
@@ -33,13 +33,13 @@ def test_read_lines_and_files_pull_in_stb_ds(transpile):
 
 
 def test_file_close_rewrite(transpile):
-    c = transpile('fn main() -> int:\n    f: OpcFile = read_file("x")\n    file_close(f)\n    return 0\n')
+    c = transpile('fn main() -> int:\n    f: file = read_file("x")\n    file_close(f)\n    return 0\n')
     assert_transpiles_to(c, ['opc_file_close(f);'])
 
 
 def test_already_rewritten_is_idempotent(transpile):
     # `opc_read_file` must not be rewritten again into `opc_opc_read_file`.
-    c = transpile('fn main() -> int:\n    f: OpcFile = read_file("x")\n    return 0\n')
+    c = transpile('fn main() -> int:\n    f: file = read_file("x")\n    return 0\n')
     assert 'opc_opc_read_file' not in c
 
 
@@ -51,12 +51,12 @@ fn main() -> int:
     fprintf(fp, "line one\\nline two\\nline three\\n")
     fclose(fp)
 
-    f: OpcFile = read_file("opc_io_smoke.txt")
+    f: file = read_file("opc_io_smoke.txt")
     printf("ok=%d size=%ld\\n", f.ok, f.size)
     printf("%s", f.data)
     file_close(f)
 
-    m: OpcFile = read_file("opc_io_smoke.txt", "mmap")
+    m: file = read_file("opc_io_smoke.txt", "mmap")
     printf("mmap_size=%ld\\n", m.size)
     file_close(m)
 
@@ -110,7 +110,7 @@ fn main() -> int:
     fclose(fp)
 
     paths: list[char*] = ["opc_a.txt", "opc_b.txt"]
-    files: list[OpcFile] = read_files(paths)
+    files: list[file] = read_files(paths)
     for i in range(len(files)):
         printf("%ld:%s\\n", files[i].size, files[i].data)
         file_close(files[i])
