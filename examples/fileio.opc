@@ -1,0 +1,33 @@
+// File reading in SimplC — pick the fastest read for your use case.
+// Transpile:  python3 transpiler.py examples/fileio.opc
+// Build:      gcc examples/fileio.c -o examples/fileio -lm
+// (For the Linux io_uring fast path on read_files: add -DOPC_USE_URING -luring)
+
+fn main() -> int:
+    // Make a small file to read back.
+    fp: FILE* = fopen("greeting.txt", "w")
+    fprintf(fp, "hello\nfrom\nSimplC\n")
+    fclose(fp)
+
+    // Whole file, sequential — the portable default.
+    f: OpcFile = read_file("greeting.txt")
+    if !f.ok:
+        printf("read failed\n")
+        return 1
+    printf("%ld bytes:\n%s", f.size, f.data)
+    file_close(f)
+
+    // Same file, zero-copy memory map — ideal for random access.
+    m: OpcFile = read_file("greeting.txt", "mmap")
+    printf("mmap saw %ld bytes\n", m.size)
+    file_close(m)
+
+    // Line-oriented text → a list[char*] you can iterate.
+    lines: list[char*] = read_lines("greeting.txt")
+    printf("%ld lines:\n", len(lines))
+    for i in range(len(lines)):
+        printf("  %d: %s\n", i, lines[i])
+    free_lines(lines)
+
+    remove("greeting.txt")
+    return 0

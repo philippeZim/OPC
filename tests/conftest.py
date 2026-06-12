@@ -26,6 +26,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from transpiler import SimplCTranspiler  # noqa: E402
 
 STB_DS_HEADER = PROJECT_ROOT / "stb_ds.h"
+OPC_IO_HEADER = PROJECT_ROOT / "opc_io.h"
 
 
 @dataclass
@@ -68,14 +69,12 @@ def transpile(transpiler):
 # ── compilation & execution helpers ──────────────────────────────────
 
 
-def _copy_stb_ds(workdir: Path) -> None:
-    """Place stb_ds.h next to the .c file so the `#include "stb_ds.h"` resolves."""
-    if STB_DS_HEADER.exists():
+def _copy_bundled_headers(workdir: Path, c_source: str) -> None:
+    """Place any bundled headers the C source includes next to the .c file."""
+    if "stb_ds.h" in c_source and STB_DS_HEADER.exists():
         shutil.copy(STB_DS_HEADER, workdir / "stb_ds.h")
-
-
-def _detect_stb_ds(c_source: str) -> bool:
-    return "stb_ds.h" in c_source
+    if "opc_io.h" in c_source and OPC_IO_HEADER.exists():
+        shutil.copy(OPC_IO_HEADER, workdir / "opc_io.h")
 
 
 @pytest.fixture
@@ -107,8 +106,7 @@ def compile_c(tmp_path):
             cmd[2:2] = extra_cflags
         if extra_ldflags:
             cmd.extend(extra_ldflags)
-        if _detect_stb_ds(c_source):
-            _copy_stb_ds(tmp_path)
+        _copy_bundled_headers(tmp_path, c_source)
         proc = subprocess.run(cmd, capture_output=True, text=True)
         return CompileResult(
             ok=(proc.returncode == 0),

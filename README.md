@@ -807,6 +807,7 @@ You never write `#include`. The transpiler scans your code for function calls, t
 | `assert` | `#include <assert.h>` |
 | `isalpha`, `toupper`, `isdigit`, etc. | `#include <ctype.h>` |
 | `list[T]`, `map[K,V]`, `arrput`, `hmput`, etc. | `#define STB_DS_IMPLEMENTATION` + `#include "stb_ds.h"` |
+| `read_file`, `read_lines`, `read_files`, etc. | `#include "opc_io.h"` (see §12) |
 
 Example — all includes detected automatically:
 
@@ -851,7 +852,144 @@ int main() {
 
 ---
 
-## 12. Passthrough / Raw C
+## 12. Reading Files
+
+SimplC ships a small, portable file-reading runtime (`opc_io.h`, auto-included and copied next to your output just like `stb_ds.h`). One verb covers the common cases, and a **strategy hint** lets you pick the fastest mechanism for your access pattern — without writing any platform code. Each strategy maps to the matching OS primitive (and an OS-specific fast path where one is faster), falling back gracefully everywhere else.
+
+### 12.1 Choosing a strategy
+
+Use this decision tree to pick the read that fits your use case:
+
+```
+Reading many files at once, want to saturate an NVMe / keep the queue full?
+├─ yes → read_files(paths)              // io_uring batch on Linux (opt-in), else sequential
+└─ no  → Random access (jumping around the file), not pure front-to-back?
+         ├─ yes → Does the file comfortably fit in RAM?
+         │        ├─ yes → read_file(path, "mmap")    // zero-copy memory map
+         │        └─ no  → read_file(path, "pread")   // positioned reads, large blocks
+         └─ no  → Line-oriented text you want split into lines?
+                  ├─ yes → read_lines(path)           // buffered getline → list[char*]
+                  └─ no  → read_file(path)            // whole file, large sequential blocks
+```
+
+| SimplC | Use case | Mechanism |
+|--------|----------|-----------|
+| `read_file(path)` | Slurp a whole file, scan it front-to-back | `read()` in large blocks (POSIX) / `ReadFile` (Windows) |
+| `read_file(path, "mmap")` | Random access over a file that fits in RAM | `mmap` (POSIX) / file mapping (Windows) — zero-copy |
+| `read_file(path, "pread")` | Random access over a large file | positioned `pread` |
+| `read_file(path, "stream")` | Buffered standard I/O | `fread` |
+| `read_file(path, "uring")` | Single file, Linux NVMe fast path | io_uring (opt-in, falls back to `pread`) |
+| `read_lines(path)` | Line-oriented text | `getline` → `list[char*]` |
+| `read_files(paths)` | Many files concurrently | io_uring batch (Linux, opt-in) / sequential |
+
+Unknown strategy strings fall back to the default — a typo changes performance, never correctness.
+
+### 12.2 Whole-file reads — `read_file`
+
+`read_file` returns an **`OpcFile`** with three fields: `data` (the bytes, NUL-terminated for convenience except under `"mmap"`), `size` (byte count), and `ok` (`1` on success). Release it with `file_close`.
+
+```python
+fn main() -> int:
+    f: OpcFile = read_file("data.txt")
+    if !f.ok:
+        printf("could not read file\n")
+        return 1
+
+    printf("read %ld bytes\n", f.size)
+    printf("%s", f.data)
+
+    file_close(f)
+    return 0
+```
+
+Transpiles to:
+
+```c
+#include <stdio.h>
+#include "opc_io.h"
+
+int main() {
+    OpcFile f = opc_read_file("data.txt", "auto");
+    if (!f.ok) {
+        printf("could not read file\n");
+        return 1;
+    }
+    printf("read %ld bytes\n", f.size);
+    printf("%s", f.data);
+    opc_file_close(f);
+    return 0;
+}
+```
+
+Pass a strategy as the second argument for a different access pattern — the return type and `file_close` are identical:
+
+```python
+big: OpcFile = read_file("huge.bin", "mmap")   // zero-copy, random access
+process(big.data, big.size)
+file_close(big)
+```
+
+### 12.3 Line-oriented text — `read_lines`
+
+`read_lines` returns a `list[char*]` of lines (the trailing newline is stripped), so all the usual `list` operations — `len()`, indexing, iteration — work directly. Release it with `free_lines` (which frees the strings **and** the list).
+
+```python
+fn main() -> int:
+    lines: list[char*] = read_lines("notes.txt")
+    printf("%ld lines\n", len(lines))
+    for i in range(len(lines)):
+        printf("%d: %s\n", i, lines[i])
+    free_lines(lines)
+    return 0
+```
+
+### 12.4 Many files at once — `read_files`
+
+`read_files` takes a `list[char*]` of paths and returns a `list[OpcFile]` in the same order. On Linux built with io_uring (see §12.5) the reads are issued concurrently to keep the device queue full; everywhere else they run sequentially. Close each `OpcFile` and free the list.
+
+```python
+fn main() -> int:
+    paths: list[char*] = ["a.txt", "b.txt", "c.txt"]
+    files: list[OpcFile] = read_files(paths)
+
+    for i in range(len(files)):
+        printf("%s: %ld bytes\n", paths[i], files[i].size)
+        file_close(files[i])
+
+    paths.free()
+    files.free()
+    return 0
+```
+
+### 12.5 Enabling the Linux io_uring fast path
+
+io_uring is **opt-in** so the default build stays dependency-free. Enable it by compiling with the flag and linking `liburing`:
+
+```bash
+gcc output.c -o program -DOPC_USE_URING -luring
+```
+
+With `OPC_USE_URING` defined, `read_files` submits all reads through io_uring; without it (or on non-Linux hosts), the exact same SimplC source reads the files sequentially. You don't change a line of code to move between the two.
+
+### 12.6 Quick Reference
+
+| SimplC | C | Description |
+|--------|---|-------------|
+| `f: OpcFile = read_file(path)` | `opc_read_file(path, "auto")` | Whole file, sequential |
+| `read_file(path, "mmap")` | `opc_read_file(path, "mmap")` | Zero-copy memory map |
+| `read_file(path, "pread")` | `opc_read_file(path, "pread")` | Positioned reads |
+| `read_file(path, "stream")` | `opc_read_file(path, "stream")` | Buffered `fread` |
+| `f.data` / `f.size` / `f.ok` | struct fields | Bytes / length / success flag |
+| `file_close(f)` | `opc_file_close(f)` | Free or unmap an `OpcFile` |
+| `read_lines(path)` | `opc_read_lines(path)` | Text → `list[char*]` |
+| `free_lines(lines)` | `opc_free_lines(lines)` | Free a `read_lines` result |
+| `read_files(paths)` | `opc_read_files(paths)` | Many files → `list[OpcFile]` |
+
+> A user-defined `fn read_file(...)` (or any name above) shadows the builtin — your own function wins, and no `opc_io.h` is pulled in.
+
+---
+
+## 13. Passthrough / Raw C
 
 Any line that doesn't match a SimplC pattern passes through with auto-semicolons. This means you can freely mix raw C constructs:
 
@@ -923,7 +1061,7 @@ int main() {
 
 ---
 
-## 13. Indentation & Block Rules
+## 14. Indentation & Block Rules
 
 SimplC uses **indentation** (like Python) to define blocks. The transpiler converts indentation to `{` / `}`.
 
@@ -946,7 +1084,7 @@ fn foo() -> void:           // opens block
 
 ---
 
-## 14. Semicolons
+## 15. Semicolons
 
 Semicolons are **auto-inserted**. You never write them. The transpiler appends `;` to any line that:
 
@@ -957,7 +1095,7 @@ Semicolons are **auto-inserted**. You never write them. The transpiler appends `
 
 ---
 
-## 15. Complete Example
+## 16. Complete Example
 
 A word frequency counter combining structs, dynamic arrays, and hash maps:
 
@@ -1031,7 +1169,7 @@ int main() {
 
 ---
 
-## 16. Building & Toolchain
+## 17. Building & Toolchain
 
 ```bash
 # Transpile
@@ -1048,13 +1186,16 @@ gcc output.c -o program -lm
 
 # Compile with warnings
 gcc -Wall -Wextra output.c -o program -lm
+
+# Enable the Linux io_uring fast path for read_files (see §12.5)
+gcc output.c -o program -DOPC_USE_URING -luring
 ```
 
-For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directory as the output `.c` file. The transpiler emits `#define STB_DS_IMPLEMENTATION` automatically, so you only need the single header — no separate compilation step.
+For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directory as the output `.c` file. The transpiler emits `#define STB_DS_IMPLEMENTATION` automatically, so you only need the single header — no separate compilation step. Programs that read files (§12) also use the bundled `opc_io.h`. Both headers are copied next to your output `.c` automatically on transpile, so you never copy them by hand.
 
 ---
 
-## 17. Syntax Summary
+## 18. Syntax Summary
 
 | Feature | SimplC | C |
 |---------|--------|---|
@@ -1087,3 +1228,9 @@ For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directo
 | map default | `m.default(val)` | `shdefault/hmdefault` |
 | map free | `m.free()` | `shfree/hmfree` |
 | map iterate | `m[i].key` / `m[i].value` | direct array access |
+| read file | `f: OpcFile = read_file(path)` | `opc_read_file(path, "auto")` |
+| read (strategy) | `read_file(path, "mmap")` | `opc_read_file(path, "mmap")` |
+| close file | `file_close(f)` | `opc_file_close(f)` |
+| read lines | `read_lines(path)` | `opc_read_lines(path)` → `list[char*]` |
+| free lines | `free_lines(lines)` | `opc_free_lines(lines)` |
+| read many | `read_files(paths)` | `opc_read_files(paths)` → `list[OpcFile]` |
