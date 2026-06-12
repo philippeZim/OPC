@@ -217,6 +217,8 @@ class SimplCTranspiler:
         if not rest.startswith('='):
             return None
         val_expr = rest[1:].strip()
+        # Rewrite any map reads in the value expression (e.g. m[k] = m[k] + 1).
+        val_expr = self.rewrite_map_gets(val_expr)
         is_str = self.map_decls[name][3]
         func = 'shput' if is_str else 'hmput'
         return (f'{indent}{func}({name}, {key_expr.strip()}, {val_expr})', False)
@@ -767,8 +769,12 @@ class SimplCTranspiler:
         has_main = any(re.match(r'^\s*fn\s+main\s*\(', ln) for ln in lines)
         text = '\n'.join(output)
         inc = self._build_includes(has_main)
-        structs = self._build_map_structs()
-        preamble = '\n'.join(filter(None, [inc, structs]))
+        # Emit struct definitions before map typedefs so that map[K, Struct]
+        # can see the struct type at the typedef site.  The inline struct
+        # output in `text` is guarded with #ifndef, so the duplication is safe.
+        struct_pre = '\n\n'.join(self.struct_definitions) if self.struct_definitions else ''
+        map_structs = self._build_map_structs()
+        preamble = '\n'.join(filter(None, [inc, struct_pre, map_structs]))
         return (preamble + '\n\n' + text) if preamble else text
 
     # ── semicolon insertion ───────────────────────────────────────
@@ -776,11 +782,16 @@ class SimplCTranspiler:
     def _semi(self, line: str) -> str:
         s = line.strip()
         if not s: return line
-        if '=' in s and s.endswith('}'):
-            return line + ';'
+        if s.endswith('}'):
+            # A line ending with } needs a semicolon only when the } closes a
+            # compound literal or initializer (both { and } on the same line).
+            # Pure block closers either start with } or have no matching {.
+            if '{' in s:
+                return line + ';'
+            return line
         if (s.startswith('#') or s.startswith('//') or s.startswith('/*') or
             (s.startswith('*') and (len(s) == 1 or not s[1].isalnum())) or
-            s.endswith('{') or s.endswith('}') or
+            s.endswith('{') or
             s.startswith('}') or s.endswith(',') or s.endswith('\\') or
             s.endswith(';')):
             return line
