@@ -10,6 +10,7 @@ Workflow:
   * Light / dark theme.
 """
 
+import json
 import os
 import shlex
 import shutil
@@ -26,8 +27,51 @@ OUT_DIR = "C"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 TRANSPILER = os.path.join(APP_DIR, "transpiler.py")
 
+# Persisted IDE settings (e.g. the last opened folder) live in the user's
+# config directory so they survive restarts but stay out of the repo.
+CONFIG_DIR = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+    "opc-ide",
+)
+CONFIG_FILE = os.path.join(CONFIG_DIR, "settings.json")
+
+
+def load_settings() -> dict:
+    """Read persisted settings, tolerating a missing or corrupt file."""
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(settings: dict) -> None:
+    """Persist settings, silently ignoring write failures."""
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except OSError:
+        pass
+
+
+def remember_workspace(path: str | None) -> None:
+    """Record the last opened folder so it reopens on the next launch."""
+    settings = load_settings()
+    settings["last_folder"] = path
+    save_settings(settings)
+
+
 # The currently opened workspace folder. None until the user opens one.
 workspace = {"root": None}
+
+
+def restore_workspace() -> None:
+    """Reopen the most recently used folder, like VS Code, if it still exists."""
+    last = load_settings().get("last_folder")
+    if last and os.path.isdir(last):
+        workspace["root"] = os.path.abspath(last)
 
 # Directories / files we never want to show in the tree.
 IGNORE = {
@@ -42,6 +86,10 @@ TEXT_EXTS = {
 }
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
+
+# Reopen the last-used folder at import time so it works under any launcher
+# (python ide.py, flask run, gunicorn, …), not only the __main__ path.
+restore_workspace()
 
 
 # ── path safety ──────────────────────────────────────────────────────────────
@@ -147,6 +195,7 @@ def api_open():
             os.makedirs(os.path.join(path, sub), exist_ok=True)
         except OSError:
             pass
+    remember_workspace(path)
     return jsonify({"ok": True, "name": os.path.basename(path), "path": path})
 
 
@@ -382,5 +431,7 @@ def api_run():
 
 
 if __name__ == "__main__":
+    if workspace["root"]:
+        print(f"OPC IDE — reopened last folder: {workspace['root']}")
     print("OPC IDE — open http://127.0.0.1:5000")
     app.run(debug=True, port=5000)
