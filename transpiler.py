@@ -130,9 +130,19 @@ class SimplCTranspiler:
 
     # ── auto-include detection ────────────────────────────────────
 
+    _STRING_OR_CHAR_LITERAL = re.compile(
+        r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\''
+    )
+
     def detect_auto_includes(self, code: str):
-        ids = set(re.findall(r'\b([a-zA-Z_]\w*)\s*\(', code))
-        words = set(re.findall(r'\b([a-zA-Z_]\w*)\b', code))
+        # Replace string and char literals with empty placeholders so that
+        # identifiers inside them (e.g. `printf("free")`) are not treated
+        # as if they were top-level function calls.
+        stripped = self._STRING_OR_CHAR_LITERAL.sub('""', code)
+        # Method-call syntax: `var.free(` is the list/map `.free()`, not the
+        # stdlib `free` function. Skip identifiers preceded by `.`.
+        ids = set(re.findall(r'(?<!\.)\b([a-zA-Z_]\w*)\s*\(', stripped))
+        words = set(re.findall(r'(?<![\w.])\b([a-zA-Z_]\w*)\b', stripped))
         if ids & self.STDIO_FUNCS:   self.needed_includes.add('stdio')
         if ids & self.STDLIB_FUNCS:  self.needed_includes.add('stdlib')
         if ids & self.STRING_FUNCS:  self.needed_includes.add('string')
@@ -415,17 +425,40 @@ class SimplCTranspiler:
                 p = p.strip()
                 pm = re.match(r'^(\w+)\s*:\s*(.+)$', p)
                 if pm:
-                    pn, pt = pm.group(1), self.resolve_type(pm.group(2).strip())
+                    pn, raw_t = pm.group(1), pm.group(2).strip()
+                    pt = self.resolve_type(raw_t)
+                    self._register_container_param(pn, raw_t)
                     arr = re.match(r'^(.+?)(\[.+\])$', pt)
                     if arr: cp.append(f'{arr.group(1)} {pn}{arr.group(2)}')
                     else: cp.append(f'{pt} {pn}')
                 else: cp.append(p)
-                
+
         func_sig = f'{ret} {name}({", ".join(cp)})'
         if name != 'main':
             self.prototypes.append(func_sig + ';')
-            
+
         return (f'{indent}{func_sig}', True)
+
+    def _register_container_param(self, name: str, raw_type: str) -> None:
+        """If `raw_type` is a `list[T]` or `map[K, V]`, register `name` in
+        `arr_decls` / `map_decls` so the function body can use the usual
+        method-call and `name[key]` shorthand. Without this, parameter-typed
+        containers are invisible to the rewrite passes.
+        """
+        list_m = re.match(r'^list\[(.+)\]$', raw_type.strip())
+        if list_m:
+            self.resolve_type(list_m.group(1).strip())
+            self.arr_decls.add(name)
+            self.needed_includes.add('stb_ds')
+            return
+        map_m = re.match(r'^map\[(.+?),\s*(.+)\]$', raw_type.strip())
+        if map_m:
+            key_t = self.resolve_type(map_m.group(1).strip())
+            val_t = self.resolve_type(map_m.group(2).strip())
+            sname = self._map_struct_name(key_t, val_t)
+            self._ensure_map_struct(key_t, val_t, sname)
+            is_str = self._is_string_key(key_t)
+            self.map_decls[name] = (key_t, val_t, sname, is_str)
 
     # ── transform: for-range ──────────────────────────────────────
 
