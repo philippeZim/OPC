@@ -52,7 +52,7 @@
     isupper: "(c)", islower: "(c)", toupper: "(c)", tolower: "(c)",
     isprint: "(c)", ispunct: "(c)",
     len: "(container)", range: "(stop)", sizeof: "(type)",
-    read_file: '(path[, "mmap"|"pread"|"stream"])', read_lines: "(path)",
+    read_file: '(path[, "mmap"|"pread"|"stream"|"uring"])', read_lines: "(path)",
     read_files: "(paths)", file_close: "(file)", free_lines: "(lines)",
   };
 
@@ -67,6 +67,7 @@
     ["main", "fn main() -> i32:\n    $|", "program entry point"],
     ["for", "for $| in range():", "range loop"],
     ["fore", "for $| in range(0, , 1):", "range loop (start, stop, step)"],
+    ["forl", "for $| in :", "iterate over a list (for elem in list:)"],
     ["if", "if $|:", "if statement"],
     ["elif", "elif $|:", "else-if branch"],
     ["else", "else:\n    $|", "else branch"],
@@ -148,21 +149,41 @@
 
   // ── parse symbols from the buffer ──────────────────────────────────────────
   function parseSymbols(code) {
-    var funcs = {}, structs = {}, vars = {}, listVars = {}, mapVars = {}, m;
+    var funcs = {}, structs = {}, vars = {}, listVars = {}, mapVars = {};
+    var fileVars = {}, structVars = {}, structFields = {};
+    var m, i, line, lineIndent, structIndent, fm, sname, body;
+
+    // struct definitions + their indented field bodies
+    var lines = code.split("\n");
+    for (i = 0; i < lines.length; i++) {
+      var sm = /^\s*struct\s+([A-Za-z_]\w*)\s*:\s*$/.exec(lines[i]);
+      if (!sm) continue;
+      sname = sm[1];
+      structs[sname] = 1;
+      structFields[sname] = {};
+      structIndent = (/^[ \t]*/.exec(lines[i]) || [""])[0].length;
+      for (var j = i + 1; j < lines.length; j++) {
+        line = lines[j];
+        if (line.trim() === "") continue;
+        lineIndent = (/^[ \t]*/.exec(line) || [""])[0].length;
+        if (lineIndent <= structIndent) break;
+        fm = /^\s*([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w\[\], *]*)/.exec(line);
+        if (fm) structFields[sname][fm[1]] = 1;
+      }
+    }
 
     var reFn = /\bfn\s+([A-Za-z_]\w*)/g;
     while ((m = reFn.exec(code))) funcs[m[1]] = 1;
 
-    var reStruct = /\bstruct\s+([A-Za-z_]\w*)/g;
-    while ((m = reStruct.exec(code))) structs[m[1]] = 1;
-
     // declarations / params / struct fields:  name : type
     var reDecl = /(?:^|[\n;(,])\s*([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w\[\], *]*)/g;
     while ((m = reDecl.exec(code))) {
-      var nm = m[1], ty = m[2];
+      var nm = m[1], ty = m[2].replace(/\s+$/, "");
       vars[nm] = 1;
       if (/^list\s*\[/.test(ty)) listVars[nm] = 1;
       else if (/^map\s*\[/.test(ty)) mapVars[nm] = 1;
+      else if (ty === "file" || ty === "OpcFile") fileVars[nm] = 1;
+      else if (structs[ty]) structVars[nm] = ty;
     }
 
     // loop variables:  for i in …
@@ -170,7 +191,9 @@
     while ((m = reFor.exec(code))) vars[m[1]] = 1;
 
     return { funcs: funcs, structs: structs, vars: vars,
-             listVars: listVars, mapVars: mapVars };
+             listVars: listVars, mapVars: mapVars,
+             fileVars: fileVars, structVars: structVars,
+             structFields: structFields };
   }
 
   // ── context detection ──────────────────────────────────────────────────────
@@ -179,7 +202,10 @@
     if (mem && /\.\s*\w*$/.test(pre)) {
       var recv = mem[1];
       var kind = syms.listVars[recv] ? "list"
-               : syms.mapVars[recv] ? "map" : "any";
+               : syms.mapVars[recv] ? "map"
+               : syms.fileVars[recv] ? "file"
+               : syms.structVars[recv] ? "struct:" + syms.structVars[recv]
+               : "any";
       return { kind: "member", recv: recv, container: kind };
     }
     if (/^\s*import\s+\w*$/.test(pre)) return { kind: "import" };
@@ -201,6 +227,13 @@
     ["default", "(value)", "map — default for missing keys"],
     ["free", "()", "map — release storage"],
   ];
+  // OpcFile's user-facing fields (mirrors opc_io.h). The internal _opc_*
+  // bookkeeping is omitted on purpose.
+  var FILE_FIELDS = [
+    ["data", "char* — file bytes (NUL-terminated except mmap)"],
+    ["size", "long — number of bytes in `data`"],
+    ["ok",   "int — 1 on success, 0 on failure"],
+  ];
 
   function methodEntry(name, sig, meta) {
     return {
@@ -215,16 +248,43 @@
     };
   }
 
+  function fieldEntry(name, meta, cls) {
+    return {
+      text: name, displayText: name, _filter: name,
+      className: cls || "cm-hint-field", render: renderer(meta),
+      hint: function (cm, data, comp) {
+        var from = data.from, to = data.to;
+        cm.replaceRange(comp.text, from, to, "complete");
+        cm.setCursor(Pos(from.line, from.ch + comp.text.length));
+      },
+    };
+  }
+
   function buildList(ctx, syms) {
     var out = [];
     var k;
 
     if (ctx.kind === "member") {
+      // Typed file: offer the OpcFile fields, not list/map methods.
+      if (ctx.container === "file") {
+        FILE_FIELDS.forEach(function (ff) { out.push(fieldEntry(ff[0], ff[1])); });
+        return out;
+      }
+      // Typed struct: offer that struct's fields.
+      if (typeof ctx.container === "string" &&
+          ctx.container.indexOf("struct:") === 0) {
+        var sname = ctx.container.slice("struct:".length);
+        var fields = syms.structFields[sname] || {};
+        for (k in fields) out.push(fieldEntry(k, "field", "cm-hint-prop"));
+        return out;
+      }
+      // list / map / unknown: container methods, plus (for unknown) the names
+      // of vars seen elsewhere so a typed-but-unrecognized receiver still gets
+      // some hints.
       var methods = ctx.container === "list" ? LIST_METHODS
                   : ctx.container === "map" ? MAP_METHODS
                   : LIST_METHODS.concat(MAP_METHODS);
       methods.forEach(function (mm) { out.push(methodEntry(mm[0], mm[1], mm[2])); });
-      // unknown receiver: also offer struct field names seen elsewhere
       if (ctx.container === "any") {
         for (k in syms.vars) out.push(word(k, "field", "cm-hint-prop"));
       }
