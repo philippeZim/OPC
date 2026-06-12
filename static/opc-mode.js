@@ -11,7 +11,7 @@
   var types =
     "i8|i16|i32|i64|u8|u16|u32|u64|int|uint|float|double|char|void|bool|" +
     "short|long|signed|unsigned|size_t|ssize_t|int8_t|int16_t|int32_t|int64_t|" +
-    "uint8_t|uint16_t|uint32_t|uint64_t|FILE|list|map|OpcFile";
+    "uint8_t|uint16_t|uint32_t|uint64_t|FILE|list|map|file|OpcFile";
 
   var builtins =
     // stdio / stdlib / string / math / ctype helpers + print + stb_ds

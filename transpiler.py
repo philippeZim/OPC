@@ -114,6 +114,8 @@ class SimplCTranspiler:
             return self.STDINT_TYPES[stripped]
         if stripped == 'bool':
             self.needed_includes.add('stdbool')
+        if stripped == 'file':
+            return 'OpcFile'
         if stripped in self.struct_names:
             return stripped
         return stripped

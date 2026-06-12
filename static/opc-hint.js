@@ -20,7 +20,7 @@
 
   var TYPES = ("i8 i16 i32 i64 u8 u16 u32 u64 int uint float double char void " +
     "bool short long signed unsigned size_t ssize_t int8_t int16_t int32_t " +
-    "int64_t uint8_t uint16_t uint32_t uint64_t FILE OpcFile").split(" ");
+    "int64_t uint8_t uint16_t uint32_t uint64_t FILE file OpcFile").split(" ");
 
   var ATOMS = "true false NULL stdin stdout stderr".split(" ");
 
