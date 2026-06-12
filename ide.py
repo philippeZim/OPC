@@ -313,6 +313,168 @@ def api_delete():
     return jsonify({"ok": True})
 
 
+# ── batch / mutation helpers (rename, move, multi-delete) ───────────────────
+def _validate_basename(name: str) -> str | None:
+    """Return an error message if `name` is not a safe single-segment filename."""
+    if not name or not name.strip():
+        return "name must not be empty"
+    if name != name.strip():
+        return "name must not have leading or trailing whitespace"
+    if name in (".", ".."):
+        return "name must not be . or .."
+    if "/" in name or "\\" in name:
+        return "name must not contain a path separator"
+    if os.sep in name or (os.altsep and os.altsep in name):
+        return "name must not contain a path separator"
+    if name in IGNORE:
+        return "name is reserved"
+    return None
+
+
+def _inside(child: str, parent: str) -> bool:
+    """True if `child` is the same path as `parent` or sits inside it."""
+    child = os.path.abspath(child)
+    parent = os.path.abspath(parent)
+    if child == parent:
+        return True
+    return child.startswith(parent + os.sep)
+
+
+@app.route("/api/rename", methods=["POST"])
+def api_rename():
+    """Rename a file or folder within its current parent directory.
+
+    Body: { "path": "OPC/foo.opc", "new_name": "bar.opc" }
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        full = safe_path(data.get("path", ""))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    new_name = data.get("new_name", "")
+    err = _validate_basename(new_name)
+    if err:
+        return jsonify({"error": err}), 400
+    if full == workspace["root"]:
+        return jsonify({"error": "cannot rename workspace root"}), 400
+    parent = os.path.dirname(full)
+    target = os.path.join(parent, new_name)
+    if not _inside(target, workspace["root"]):
+        return jsonify({"error": "rename would escape workspace"}), 400
+    if os.path.exists(target):
+        return jsonify({"error": f"'{new_name}' already exists"}), 409
+    try:
+        os.rename(full, target)
+    except OSError as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({
+        "ok": True,
+        "old_path": os.path.relpath(full, workspace["root"]),
+        "new_path": os.path.relpath(target, workspace["root"]),
+    })
+
+
+@app.route("/api/move", methods=["POST"])
+def api_move():
+    """Move one or more files/folders into an existing directory.
+
+    Body: { "sources": ["OPC/a.opc", "OPC/sub"], "dest_dir": "OPC/other" }
+
+    Response: { "ok": bool, "moves": [{old_path, new_path}, ...], "errors": [...] }
+    The ``moves`` list lets the client remap open tabs and expanded folders
+    to the new locations without a second round-trip.
+    """
+    data = request.get_json(silent=True) or {}
+    sources = data.get("sources") or []
+    dest_rel = data.get("dest_dir", "")
+    if not isinstance(sources, list) or not sources:
+        return jsonify({"error": "sources must be a non-empty list"}), 400
+    try:
+        dest_full = safe_path(dest_rel)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if not os.path.isdir(dest_full):
+        return jsonify({"error": "destination is not a directory"}), 400
+
+    moves, errors = [], []
+    for src_rel in sources:
+        try:
+            src_full = safe_path(src_rel)
+        except ValueError as e:
+            errors.append({"path": src_rel, "error": str(e)})
+            continue
+        if src_full == workspace["root"]:
+            errors.append({"path": src_rel, "error": "cannot move workspace root"})
+            continue
+        # Refuse moves that drop a folder into itself or one of its descendants.
+        if _inside(dest_full, src_full):
+            errors.append({"path": src_rel, "error": "cannot move into itself"})
+            continue
+        if src_full == dest_full:
+            errors.append({"path": src_rel, "error": "source and destination are the same"})
+            continue
+        target = os.path.join(dest_full, os.path.basename(src_full))
+        if not _inside(target, workspace["root"]):
+            errors.append({"path": src_rel, "error": "move would escape workspace"})
+            continue
+        if os.path.exists(target):
+            errors.append({"path": src_rel, "error": f"'{os.path.basename(target)}' already exists at destination"})
+            continue
+        try:
+            os.rename(src_full, target)
+            moves.append({
+                "old_path": os.path.relpath(src_full, workspace["root"]),
+                "new_path": os.path.relpath(target, workspace["root"]),
+            })
+        except OSError as e:
+            errors.append({"path": src_rel, "error": str(e)})
+
+    return jsonify({"ok": not errors, "moves": moves, "errors": errors})
+
+
+@app.route("/api/delete_many", methods=["POST"])
+def api_delete_many():
+    """Delete several files/folders in one call.
+
+    Body: { "paths": ["OPC/a.opc", "OPC/sub"] }
+    Sources are sorted deepest-first so children vanish before their parents.
+    """
+    data = request.get_json(silent=True) or {}
+    paths = data.get("paths") or []
+    if not isinstance(paths, list) or not paths:
+        return jsonify({"error": "paths must be a non-empty list"}), 400
+
+    resolved = []
+    errors = []
+    for p in paths:
+        try:
+            full = safe_path(p)
+        except ValueError as e:
+            errors.append({"path": p, "error": str(e)})
+            continue
+        if full == workspace["root"]:
+            errors.append({"path": p, "error": "cannot delete workspace root"})
+            continue
+        resolved.append(full)
+
+    # Deepest-first: longer paths come first so children are deleted before parents.
+    resolved.sort(key=lambda p: -len(p))
+    deleted = []
+    for full in resolved:
+        if not os.path.exists(full):
+            errors.append({"path": os.path.relpath(full, workspace["root"]), "error": "not found"})
+            continue
+        try:
+            if os.path.isdir(full):
+                shutil.rmtree(full)
+            else:
+                os.remove(full)
+            deleted.append(os.path.relpath(full, workspace["root"]))
+        except OSError as e:
+            errors.append({"path": os.path.relpath(full, workspace["root"]), "error": str(e)})
+    return jsonify({"ok": not errors, "deleted": deleted, "errors": errors})
+
+
 @app.route("/api/transpile", methods=["POST"])
 def api_transpile():
     """Run the transpiler on a saved .opc file; output lands in the C/ dir."""
