@@ -197,6 +197,93 @@ class SimplCTranspiler:
             i += 1
         return None
 
+    def _split_top_level(self, s: str) -> list:
+        """Split on top-level commas, respecting brackets and string/char literals."""
+        parts = []; cur = []; depth = 0; in_str = None; i = 0
+        while i < len(s):
+            ch = s[i]
+            if in_str:
+                cur.append(ch)
+                if ch == '\\' and i + 1 < len(s):
+                    cur.append(s[i+1]); i += 2; continue
+                if ch == in_str: in_str = None
+            elif ch in '"\'':
+                in_str = ch; cur.append(ch)
+            elif ch in '([{':
+                depth += 1; cur.append(ch)
+            elif ch in ')]}':
+                depth -= 1; cur.append(ch)
+            elif ch == ',' and depth == 0:
+                parts.append(''.join(cur)); cur = []
+            else:
+                cur.append(ch)
+            i += 1
+        if cur: parts.append(''.join(cur))
+        return parts
+
+    def _split_kv(self, item: str):
+        """Split a `key: value` pair on its first top-level ':'. Returns (k, v) or None."""
+        depth = 0; in_str = None; i = 0
+        while i < len(item):
+            ch = item[i]
+            if in_str:
+                if ch == '\\': i += 2; continue
+                if ch == in_str: in_str = None
+            elif ch in '"\'':
+                in_str = ch
+            elif ch in '([{':
+                depth += 1
+            elif ch in ')]}':
+                depth -= 1
+            elif ch == ':' and depth == 0:
+                return (item[:i].strip(), item[i+1:].strip())
+            i += 1
+        return None
+
+    def _parse_list_type(self, raw: str):
+        """Parse `list[T]` or `list[T](cap)`. Returns (inner_type, cap_or_None) or None."""
+        raw = raw.strip()
+        if not raw.startswith('list['):
+            return None
+        bracket_start = raw.index('[')
+        inner = self._find_bracket_expr(raw, bracket_start)
+        if inner is None:
+            return None
+        after = raw[bracket_start + len(inner) + 2:].strip()
+        if not after:
+            return (inner.strip(), None)
+        if after.startswith('('):
+            pc = self._find_paren_content(after, 0)
+            if pc and pc[1] == len(after):
+                return (inner.strip(), pc[0].strip())
+        return None
+
+    def _parse_list_literal(self, val: str):
+        """Parse `[e1, e2, ...]`. Returns list of element exprs, or None if not a literal."""
+        val = val.strip()
+        if not (val.startswith('[') and val.endswith(']')):
+            return None
+        inner = val[1:-1].strip()
+        if not inner:
+            return []
+        return [e.strip() for e in self._split_top_level(inner)]
+
+    def _parse_map_literal(self, val: str):
+        """Parse `{k1: v1, k2: v2, ...}`. Returns list of (key, value) or None."""
+        val = val.strip()
+        if not (val.startswith('{') and val.endswith('}')):
+            return None
+        inner = val[1:-1].strip()
+        if not inner:
+            return []
+        pairs = []
+        for item in self._split_top_level(inner):
+            kv = self._split_kv(item)
+            if kv is None:
+                return None
+            pairs.append(kv)
+        return pairs
+
     # ── transform: map put  (name[key] = val) ────────────────────
 
     def try_map_put(self, s):
@@ -515,21 +602,29 @@ class SimplCTranspiler:
             indent, name, raw, val = m.group(1), m.group(2), m.group(3).strip(), m.group(4).strip()
             if name in self.RESERVED: return None
 
-            arr_m = re.match(r'^list\[(.+)\]$', raw)
-            if arr_m:
-                elem_t = self.resolve_type(arr_m.group(1).strip())
+            list_info = self._parse_list_type(raw)
+            if list_info is not None:
+                inner_raw, cap = list_info
+                elem_t = self.resolve_type(inner_raw)
                 self.arr_decls.add(name)
                 self.needed_includes.add('stb_ds')
                 star = '*' if elem_t.endswith('*') else ' *'
-                cap_m = re.match(r'^\[\s*(\d+)\s*\]$', val)
-                empty_m = re.match(r'^\[\s*\]$', val)
-                if empty_m:
-                    return (f'{indent}{elem_t}{star}{name} = NULL', False)
-                elif cap_m:
-                    cap = cap_m.group(1)
-                    return (f'{indent}{elem_t}{star}{name} = NULL;\n{indent}arrsetcap({name}, {cap})', False)
-                else:
+                elems = self._parse_list_literal(val)
+                if elems is None:
+                    # Not a literal — direct assignment (e.g. another array / call).
+                    if cap is not None:
+                        return (';\n'.join([
+                            f'{indent}{elem_t}{star}{name} = NULL',
+                            f'{indent}arrsetcap({name}, {cap})',
+                            f'{indent}{name} = {val}',
+                        ]), False)
                     return (f'{indent}{elem_t}{star}{name} = {val}', False)
+                stmts = [f'{indent}{elem_t}{star}{name} = NULL']
+                if cap is not None:
+                    stmts.append(f'{indent}arrsetcap({name}, {cap})')
+                for e in elems:
+                    stmts.append(f'{indent}arrput({name}, {e})')
+                return (';\n'.join(stmts), False)
 
             map_m = re.match(r'^map\[(.+?),\s*(.+)\]$', raw)
             if map_m:
@@ -539,9 +634,15 @@ class SimplCTranspiler:
                 self._ensure_map_struct(key_t, val_t, sname)
                 is_str = self._is_string_key(key_t)
                 self.map_decls[name] = (key_t, val_t, sname, is_str)
-                empty_m = re.match(r'^\{\s*\}$', val)
-                c_val = 'NULL' if empty_m else val
-                return (f'{indent}{sname} *{name} = {c_val}', False)
+                pairs = self._parse_map_literal(val)
+                if pairs is None:
+                    # Not a literal (e.g. `= NULL` or another map) — assign directly.
+                    return (f'{indent}{sname} *{name} = {val}', False)
+                func = 'shput' if is_str else 'hmput'
+                stmts = [f'{indent}{sname} *{name} = NULL']
+                for k, v in pairs:
+                    stmts.append(f'{indent}{func}({name}, {k}, {v})')
+                return (';\n'.join(stmts), False)
 
             ct = self.resolve_type(raw)
             arr = re.match(r'^(.+?)(\[.+\])$', ct)
@@ -554,14 +655,19 @@ class SimplCTranspiler:
             indent, name, raw = m.group(1), m.group(2), m.group(3).strip()
             if name in self.RESERVED: return None
 
-            arr_m = re.match(r'^list\[(.+)\]$', raw)
-            if arr_m:
-                elem_t = self.resolve_type(arr_m.group(1).strip())
+            list_info = self._parse_list_type(raw)
+            if list_info is not None:
+                inner_raw, cap = list_info
+                elem_t = self.resolve_type(inner_raw)
                 self.arr_decls.add(name)
                 self.needed_includes.add('stb_ds')
-                if elem_t.endswith('*'):
-                    return (f'{indent}{elem_t}*{name}', False)
-                return (f'{indent}{elem_t} *{name}', False)
+                star = '*' if elem_t.endswith('*') else ' *'
+                if cap is not None:
+                    return (';\n'.join([
+                        f'{indent}{elem_t}{star}{name} = NULL',
+                        f'{indent}arrsetcap({name}, {cap})',
+                    ]), False)
+                return (f'{indent}{elem_t}{star}{name}', False)
 
             map_m = re.match(r'^map\[(.+?),\s*(.+)\]$', raw)
             if map_m:

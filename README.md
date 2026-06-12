@@ -444,13 +444,15 @@ Dynamic arrays use [stb_ds.h](https://github.com/nothings/stb). Place `stb_ds.h`
 
 ### 6.1 Declaration
 
-**`name: list[T] = []`** declares an empty dynamic array of element type `T`. Optionally pass an integer inside `[]` to pre-allocate capacity:
+**`name: list[T] = []`** declares an empty dynamic array of element type `T`. You can initialize it with values using a list literal, and/or pre-allocate capacity by writing `(N)` after the type:
 
 ```python
 nums: list[int] = []
 words: list[char*] = []
 points: list[Point] = []
-big: list[double] = [1000]
+vals: list[int] = [1, 2, 3]
+big: list[double](1000) = []
+both: list[int](10) = [1, 2, 3]
 ```
 
 Transpiles to:
@@ -459,8 +461,17 @@ Transpiles to:
 int *nums = NULL;
 char **words = NULL;
 Point *points = NULL;
+int *vals = NULL;
+arrput(vals, 1);
+arrput(vals, 2);
+arrput(vals, 3);
 double *big = NULL;
 arrsetcap(big, 1000);
+int *both = NULL;
+arrsetcap(both, 10);
+arrput(both, 1);
+arrput(both, 2);
+arrput(both, 3);
 ```
 
 The transpiler auto-emits `#define STB_DS_IMPLEMENTATION` and `#include "stb_ds.h"`.
@@ -494,7 +505,7 @@ fn main() -> int:
     del nums[0]
 
     // Pre-allocate capacity at declaration
-    big: list[double] = [1000]
+    big: list[double](1000) = []
 
     // Free
     nums.free()
@@ -562,7 +573,8 @@ fn main() -> int:
 | SimplC | C | Description |
 |--------|---|-------------|
 | `a: list[T] = []` | `T *a = NULL;` | Declare empty dynamic array |
-| `a: list[T] = [N]` | `T *a = NULL; arrsetcap(a, N);` | Declare with initial capacity |
+| `a: list[T] = [v1, v2, ...]` | `T *a = NULL; arrput(a, v1); ...` | Declare and initialize with values |
+| `a: list[T](N) = []` | `T *a = NULL; arrsetcap(a, N);` | Declare with initial capacity |
 | `a.append(val)` | `arrput(a, val)` | Append value |
 | `a.pop()` | `arrpop(a)` | Remove & return last element |
 | `a.insert(i, val)` | `arrins(a, i, val)` | Insert at index `i` |
@@ -582,11 +594,20 @@ Hash maps use stb_ds.h under the hood — all stb_ds details are hidden.
 
 ### 7.1 Declaration
 
-**`name: map[K, V] = {}`** declares a hash map with key type `K` and value type `V`:
+**`name: map[K, V] = {}`** declares a hash map with key type `K` and value type `V`. It can also be initialized with key/value pairs using a map literal:
 
 ```python
 scores: map[char*, int] = {}
 ages: map[int, double] = {}
+prices: map[char*, int] = {"apple": 1, "pear": 2}
+```
+
+The literal form transpiles to a `NULL` declaration followed by one `shput`/`hmput` per pair:
+
+```c
+__map_charptr_int *prices = NULL;
+shput(prices, "apple", 1);
+shput(prices, "pear", 2);
 ```
 
 ### 7.2 Put, Get, Delete
@@ -680,6 +701,7 @@ fn lookup(db: map[char*, int], key: char*) -> int:
 | SimplC | Description |
 |--------|-------------|
 | `m: map[K, V] = {}` | Declare a map |
+| `m: map[K, V] = {k1: v1, ...}` | Declare and initialize with pairs |
 | `m[key] = val` | Insert / update |
 | `m[key]` | Get value |
 | `del m[key]` | Delete entry |

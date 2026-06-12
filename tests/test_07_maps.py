@@ -238,3 +238,38 @@ def test_map_params_transpile(transpile):
 
 def test_map_params_runs(run_simplc):
     assert_runs(run_simplc(PARAMS_SOURCE), "x=42\n")
+
+
+# ── §7.1 map literal initialization (new syntax) ──────────────────
+
+
+MAP_LITERAL_SOURCE = """\
+fn main() -> int:
+    prices: map[char*, int] = {"apple": 1, "pear": 2, "plum": 3}
+    squares: map[int, int] = {1: 1, 2: 4, 3: 9}
+    printf("apple=%d plum=%d len=%ld\\n", prices["apple"], prices["plum"], len(prices))
+    printf("sq2=%d sq3=%d\\n", squares[2], squares[3])
+    prices.free()
+    squares.free()
+    return 0
+"""
+
+
+def test_map_literal_transpile(transpile):
+    c = transpile(MAP_LITERAL_SOURCE)
+    assert_transpiles_to(c, [
+        '__map_charptr_int *prices = NULL;',
+        'shput(prices, "apple", 1);',
+        'shput(prices, "pear", 2);',
+        'shput(prices, "plum", 3);',
+        '__map_int_int *squares = NULL;',
+        'hmput(squares, 1, 1);',
+        'hmput(squares, 2, 4);',
+        'hmput(squares, 3, 9);',
+    ])
+
+
+def test_map_literal_runs(run_simplc):
+    result = run_simplc(MAP_LITERAL_SOURCE)
+    assert result.ok, f"compile stderr:\n{result.compile.stderr}\nrun stderr:\n{result.stderr}"
+    assert result.stdout == "apple=1 plum=3 len=3\nsq2=4 sq3=9\n"
