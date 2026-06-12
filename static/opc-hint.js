@@ -5,13 +5,31 @@
 //
 //   * after `:`  / `->`        → types  (incl. list[…] / map[…, …]) + structs
 //   * after `recv.`            → list / map methods (or struct fields)
-//   * elsewhere                → keywords, atoms, builtins, snippets, symbols
+//   * else                      → keywords, atoms, builtins, snippets, symbols
 //
 // Registered as CodeMirror.hint.opc so `cm.showHint({hint: CodeMirror.hint.opc})`
 // works.  app.js wires up the automatic popup and Ctrl-Space.
-(function () {
-  if (!window.CodeMirror) return;
-  var Pos = CodeMirror.Pos;
+//
+// The file is written as a UMD module: in the browser it self-registers with
+// CodeMirror, in Node.js (tests) it exports the pure core so it can be unit
+// tested without a DOM.
+(function (root, factory) {
+  "use strict";
+  if (typeof module === "object" && module.exports) {
+    module.exports = factory();
+  } else {
+    var core = factory();
+    root.OpcHint = core;
+    if (root.CodeMirror) {
+      root.CodeMirror.registerHelper("hint", "opc", function (cm) {
+        return core.suggest(cm);
+      });
+    }
+  }
+})(typeof self !== "undefined" ? self : this, function () {
+  "use strict";
+  var Pos = (typeof CodeMirror !== "undefined" && CodeMirror.Pos) ||
+            function (line, ch) { return { line: line, ch: ch }; };
 
   // ── vocabulary (mirrors transpiler.py / opc-mode.js) ───────────────────────
   var KEYWORDS = ("fn del import return if elif else while for in range break " +
@@ -147,11 +165,25 @@
     };
   }
 
+  // Strip trailing whitespace and a stray trailing comma from the type
+  // capture (struct field lines often end with a comma, e.g. `x: int,`).
+  // We intentionally keep a trailing `*` so `char*` stays `char*` — the `*`
+  // is a real part of the type expression, not punctuation.
+  function normalizeType(ty) {
+    return String(ty || "").replace(/[\s,]+$/, "");
+  }
+
   // ── parse symbols from the buffer ──────────────────────────────────────────
+  //
+  // `structFields[sname]` is a map of `fieldName -> fieldType`, where
+  // `fieldType` is the *type expression* as written (e.g. "Inner", "list[int]",
+  // "char*").  The detection logic uses that to offer chained field access
+  // — typing `outer.inner.` knows to look up `inner`'s declared type and
+  // surface the fields of *that* struct, not the outer one.
   function parseSymbols(code) {
     var funcs = {}, structs = {}, vars = {}, listVars = {}, mapVars = {};
     var fileVars = {}, structVars = {}, structFields = {};
-    var m, i, line, lineIndent, structIndent, fm, sname, body;
+    var m, i, line, lineIndent, structIndent, fm, sname;
 
     // struct definitions + their indented field bodies
     var lines = code.split("\n");
@@ -167,8 +199,8 @@
         if (line.trim() === "") continue;
         lineIndent = (/^[ \t]*/.exec(line) || [""])[0].length;
         if (lineIndent <= structIndent) break;
-        fm = /^\s*([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w\[\], *]*)/.exec(line);
-        if (fm) structFields[sname][fm[1]] = 1;
+        fm = /^\s*([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\s*\*)?(?:\s*\[[^\]]*\])?)/.exec(line);
+        if (fm) structFields[sname][fm[1]] = normalizeType(fm[2]);
       }
     }
 
@@ -176,9 +208,17 @@
     while ((m = reFn.exec(code))) funcs[m[1]] = 1;
 
     // declarations / params / struct fields:  name : type
-    var reDecl = /(?:^|[\n;(,])\s*([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w\[\], *]*)/g;
+    //
+    // The type capture is intentionally tight — `name : T` not
+    // `name : T, something_else`.  The old greedy `[\w\[\], *]*` happily
+    // swallowed the next parameter (e.g. `(a: Vec, b: Vec)` matched `a`
+    // with type `Vec, b`), which broke structVar tracking for any param
+    // past the first.  The new pattern: name, optional pointer, optional
+    // `[K, V, …]` generic — stops at the first character that can't be in
+    // a type expression.
+    var reDecl = /(?:^|[\n;(,])\s*([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\s*\*)?(?:\s*\[[^\]]*\])?)/g;
     while ((m = reDecl.exec(code))) {
-      var nm = m[1], ty = m[2].replace(/\s+$/, "");
+      var nm = m[1], ty = normalizeType(m[2]);
       vars[nm] = 1;
       if (/^list\s*\[/.test(ty)) listVars[nm] = 1;
       else if (/^map\s*\[/.test(ty)) mapVars[nm] = 1;
@@ -196,17 +236,96 @@
              structFields: structFields };
   }
 
+  // Walk a `a.b.c` chain and return the type of the last segment, or null
+  // when any link is unknown.  `structFields` is the per-struct map of
+  // field-name -> field-type produced by `parseSymbols`.  When more than one
+  // struct defines a field with the same name the result is the union
+  // (de-duplicated) of those field types so the caller can still offer hints.
+  function resolveChainType(chain, syms) {
+    if (!chain) return null;
+    var segs = chain.split(".").filter(function (s) { return s.length > 0; });
+    if (!segs.length) return null;
+
+    // First segment may be a typed variable; everything after must come from
+    // struct field types we already parsed.
+    var candidates = [];
+    var headTy = syms.structVars[segs[0]];
+    if (headTy) candidates.push(headTy);
+    // If the head isn't a typed variable, fall through to "any field of any
+    // struct" by seeding candidates with every struct name.
+    if (!candidates.length) {
+      for (var s in syms.structs) candidates.push(s);
+    }
+    if (!candidates.length) return null;
+
+    for (var k = 1; k < segs.length; k++) {
+      var field = segs[k];
+      var next = {};
+      for (var i = 0; i < candidates.length; i++) {
+        var cname = candidates[i];
+        var fmap = syms.structFields[cname];
+        if (!fmap) continue;
+        var fty = fmap[field];
+        if (fty && !next[fty]) next[fty] = 1;
+      }
+      candidates = Object.keys(next);
+      if (!candidates.length) return null;
+    }
+    return candidates;
+  }
+
   // ── context detection ──────────────────────────────────────────────────────
+  //
+  // We distinguish three shapes of the "recv." pattern so chained access
+  // (`outer.inner.`) gets field suggestions for `inner`'s struct, not the
+  // outer one:
+  //   * `recv.`             → single segment: type comes from structVars
+  //   * `a.b.c.`            → multi segment: walk the chain
+  //   * `recv.` (unknown)   → fall through to "any"
   function detectContext(pre, syms) {
-    var mem = /([A-Za-z_]\w*)\s*\.\s*\w*$/.exec(pre);
+    var mem = /([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)\s*\.\s*\w*$/.exec(pre);
     if (mem && /\.\s*\w*$/.test(pre)) {
-      var recv = mem[1];
-      var kind = syms.listVars[recv] ? "list"
-               : syms.mapVars[recv] ? "map"
-               : syms.fileVars[recv] ? "file"
-               : syms.structVars[recv] ? "struct:" + syms.structVars[recv]
-               : "any";
-      return { kind: "member", recv: recv, container: kind };
+      var chain = mem[1].replace(/\s+/g, "");
+      var segs = chain.split(".");
+      var recv = segs[segs.length - 1];
+
+      if (segs.length === 1) {
+        // Single receiver — the easy case.
+        var kind = syms.listVars[recv] ? "list"
+                 : syms.mapVars[recv] ? "map"
+                 : syms.fileVars[recv] ? "file"
+                 : syms.structVars[recv] ? "struct:" + syms.structVars[recv]
+                 : "any";
+        return { kind: "member", recv: recv, chain: chain, container: kind };
+      }
+
+      // Multi-segment chain — walk it and figure out what the last segment
+      // resolves to.  `resolveChainType` returns an array of candidate types
+      // (because two different structs may have a field with the same name);
+      // we collapse the list into the kinds the builder understands.
+      var types = resolveChainType(chain, syms) || [];
+      if (types.length === 1) {
+        var t = types[0];
+        if (/^list\s*\[/.test(t)) {
+          return { kind: "member", recv: recv, chain: chain, container: "list" };
+        }
+        if (/^map\s*\[/.test(t)) {
+          return { kind: "member", recv: recv, chain: chain, container: "map" };
+        }
+        if (t === "file" || t === "OpcFile") {
+          return { kind: "member", recv: recv, chain: chain, container: "file" };
+        }
+        if (syms.structs[t]) {
+          return { kind: "member", recv: recv, chain: chain,
+                   container: "struct:" + t };
+        }
+      }
+      if (types.length > 1) {
+        // Multiple possible struct types — surface the union of fields.
+        return { kind: "member", recv: recv, chain: chain,
+                 container: "structs:" + types.join("|") };
+      }
+      return { kind: "member", recv: recv, chain: chain, container: "any" };
     }
     if (/^\s*import\s+\w*$/.test(pre)) return { kind: "import" };
     if (/->\s*[\w *]*$/.test(pre) ||
@@ -260,6 +379,23 @@
     };
   }
 
+  // For "structs:A|B" contexts we offer the *union* of the named structs'
+  // fields, with the source struct name as the metadata.  This is what makes
+  // `outer.inner.` still useful when `inner` exists on more than one struct.
+  function buildStructUnion(types, syms) {
+    var out = [];
+    var seen = {};
+    types.forEach(function (t) {
+      var fmap = syms.structFields[t] || {};
+      for (var f in fmap) {
+        if (seen[f]) continue;
+        seen[f] = 1;
+        out.push(fieldEntry(f, "field of " + t, "cm-hint-prop"));
+      }
+    });
+    return out;
+  }
+
   function buildList(ctx, syms) {
     var out = [];
     var k;
@@ -275,8 +411,15 @@
           ctx.container.indexOf("struct:") === 0) {
         var sname = ctx.container.slice("struct:".length);
         var fields = syms.structFields[sname] || {};
-        for (k in fields) out.push(fieldEntry(k, "field", "cm-hint-prop"));
+        for (k in fields) out.push(fieldEntry(k, "field of " + sname, "cm-hint-prop"));
         return out;
+      }
+      // Union of typed structs (chained access whose target could be one
+      // of several structs): merge their fields.
+      if (typeof ctx.container === "string" &&
+          ctx.container.indexOf("structs:") === 0) {
+        var types = ctx.container.slice("structs:".length).split("|");
+        return buildStructUnion(types, syms);
       }
       // list / map / unknown: container methods, plus (for unknown) the names
       // of vars seen elsewhere so a typed-but-unrecognized receiver still gets
@@ -315,9 +458,17 @@
   }
 
   // ── main hint function ─────────────────────────────────────────────────────
-  function opcHint(cm) {
+  //
+  // Designed to work both with a real CodeMirror instance (browser) and a
+  // minimal stub (Node.js tests).  The stub only needs:
+  //   - getCursor()        → { line, ch }
+  //   - getLine(n)         → string
+  //   - getTokenAt(pos)    → { type } | {}
+  //   - getValue()         → full source
+  //   - replaceRange, setCursor (used by entry.hint, not by suggest itself)
+  function suggest(cm) {
     var cur = cm.getCursor();
-    var token = cm.getTokenAt(cur);
+    var token = cm.getTokenAt(cur) || {};
     if (token.type === "string" || token.type === "string-2" ||
         token.type === "comment") return null;
 
@@ -355,5 +506,28 @@
     return { list: list, from: from, to: cur };
   }
 
-  CodeMirror.registerHelper("hint", "opc", opcHint);
-})();
+  return {
+    // core (pure, testable)
+    parseSymbols: parseSymbols,
+    detectContext: detectContext,
+    buildList: buildList,
+    resolveChainType: resolveChainType,
+    suggest: suggest,
+    // entry builders (also useful from tests)
+    word: word,
+    call: call,
+    snippet: snippet,
+    methodEntry: methodEntry,
+    fieldEntry: fieldEntry,
+    // vocabulary (handy for tests and other IDE tooling)
+    KEYWORDS: KEYWORDS,
+    TYPES: TYPES,
+    ATOMS: ATOMS,
+    BUILTINS: BUILTINS,
+    SNIPPETS: SNIPPETS,
+    TYPE_SNIPPETS: TYPE_SNIPPETS,
+    LIST_METHODS: LIST_METHODS,
+    MAP_METHODS: MAP_METHODS,
+    FILE_FIELDS: FILE_FIELDS,
+  };
+});

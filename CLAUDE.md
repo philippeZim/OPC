@@ -20,9 +20,22 @@ gcc output.c -o program -lm
 
 # With warnings
 gcc -Wall -Wextra output.c -o program -lm
+
+# Run the test suite
+.venv/bin/python -m pytest tests/                  # Python transpiler + IDE tests
+node --test tests/test_hint_core.js                # JS autocomplete core (Node)
 ```
 
 For programs using `list[T]` or `map[K,V]`, `stb_ds.h` must be in the same directory as the output `.c` file (it is bundled here).
+
+## IDE autocomplete
+
+`static/opc-hint.js` is a UMD module: in the browser it self-registers with
+CodeMirror (`CodeMirror.hint.opc`), in Node it exports the pure functions
+(`parseSymbols`, `detectContext`, `buildList`, `resolveChainType`, `suggest`)
+for unit testing. `tests/test_hint_core.js` exercises the pure surface using
+Node's built-in test runner, and `tests/test_19_hint_core.py` shells out to
+`node --test` so a single `pytest` run covers both languages.
 
 ## Transpiler architecture (`transpiler.py`)
 
