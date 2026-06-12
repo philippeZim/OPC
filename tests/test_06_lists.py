@@ -234,3 +234,69 @@ def test_literal_init_runs(run_simplc):
     result = run_simplc(LITERAL_INIT_SOURCE)
     assert result.ok, f"compile stderr:\n{result.compile.stderr}\nrun stderr:\n{result.stderr}"
     assert result.stdout == "total=21 caplen=0\n"
+
+
+# ── §6.5 iterator for loop (for elem in list:) ────────────────────
+
+
+FOR_LIST_SOURCE = """\
+fn main() -> int:
+    nums: list[int] = [10, 20, 30]
+    total: int = 0
+    for n in nums:
+        total += n
+    printf("%d\\n", total)
+    nums.free()
+    return 0
+"""
+
+
+def test_for_list_transpile(transpile):
+    c = transpile(FOR_LIST_SOURCE)
+    assert_transpiles_to(c, [
+        'for (int _opc_i_ = 0; _opc_i_ < arrlen(nums); _opc_i_++)',
+        'int n = nums[_opc_i_];',
+    ])
+
+
+def test_for_list_runs(run_simplc):
+    result = run_simplc(FOR_LIST_SOURCE)
+    assert result.ok, f"compile stderr:\n{result.compile.stderr}\nrun stderr:\n{result.stderr}"
+    assert result.stdout == "60\n"
+
+
+FOR_LIST_STRINGS_SOURCE = """\
+fn main() -> int:
+    words: list[char*] = []
+    words.append("hello")
+    words.append("world")
+    for w in words:
+        printf("%s\\n", w)
+    words.free()
+    return 0
+"""
+
+
+def test_for_list_strings_runs(run_simplc):
+    result = run_simplc(FOR_LIST_STRINGS_SOURCE)
+    assert result.ok, f"compile stderr:\n{result.compile.stderr}\nrun stderr:\n{result.stderr}"
+    assert result.stdout == "hello\nworld\n"
+
+
+FOR_LIST_NESTED_SOURCE = """\
+fn main() -> int:
+    outer: list[int] = [1, 2]
+    inner: list[int] = [3, 4]
+    for a in outer:
+        for b in inner:
+            printf("%d\\n", a + b)
+    outer.free()
+    inner.free()
+    return 0
+"""
+
+
+def test_for_list_nested_runs(run_simplc):
+    result = run_simplc(FOR_LIST_NESTED_SOURCE)
+    assert result.ok, f"compile stderr:\n{result.compile.stderr}\nrun stderr:\n{result.stderr}"
+    assert result.stdout == "4\n5\n5\n6\n"

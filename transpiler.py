@@ -70,7 +70,7 @@ class SimplCTranspiler:
         self.user_imports = set()
         self.struct_names = set()
         self.map_decls = {}        # var_name -> (key_type, val_type, struct_name, is_string_key)
-        self.arr_decls = set()     # var names declared as arr[T]
+        self.arr_decls = {}        # var_name -> element C type
         self.generated_map_structs = {}  # struct_name -> typedef line
         self.prototypes = []
         self.struct_definitions = []
@@ -613,8 +613,8 @@ class SimplCTranspiler:
         """
         list_m = re.match(r'^list\[(.+)\]$', raw_type.strip())
         if list_m:
-            self.resolve_type(list_m.group(1).strip())
-            self.arr_decls.add(name)
+            elem_t = self.resolve_type(list_m.group(1).strip())
+            self.arr_decls[name] = elem_t
             self.needed_includes.add('stb_ds')
             return
         map_m = re.match(r'^map\[(.+?),\s*(.+)\]$', raw_type.strip())
@@ -645,6 +645,21 @@ class SimplCTranspiler:
         else: inc = f'{var} += {step}'
         cmp = '>' if neg else '<'
         return (f'{indent}for (int {var} = {start}; {var} {cmp} {end}; {inc})', True)
+
+    # ── transform: for-list (for elem in list_var:) ───────────────
+
+    def try_for_list(self, s):
+        m = re.match(r'^(\s*)for\s+(\w+)\s+in\s+(\w+)\s*:\s*$', s)
+        if not m: return None
+        indent, var, list_var = m.group(1), m.group(2), m.group(3)
+        if list_var not in self.arr_decls: return None
+        elem_t = self.arr_decls[list_var]
+        inner_indent = indent + '    '
+        if elem_t.endswith('*'):
+            elem_decl = f'{inner_indent}{elem_t}{var} = {list_var}[_opc_i_];'
+        else:
+            elem_decl = f'{inner_indent}{elem_t} {var} = {list_var}[_opc_i_];'
+        return (f'{indent}for (int _opc_i_ = 0; _opc_i_ < arrlen({list_var}); _opc_i_++)', [elem_decl])
 
     # ── transform: else-if / else ─────────────────────────────────
 
@@ -683,7 +698,7 @@ class SimplCTranspiler:
             if list_info is not None:
                 inner_raw, cap = list_info
                 elem_t = self.resolve_type(inner_raw)
-                self.arr_decls.add(name)
+                self.arr_decls[name] = elem_t
                 self.needed_includes.add('stb_ds')
                 star = '*' if elem_t.endswith('*') else ' *'
                 elems = self._parse_list_literal(val)
@@ -736,7 +751,7 @@ class SimplCTranspiler:
             if list_info is not None:
                 inner_raw, cap = list_info
                 elem_t = self.resolve_type(inner_raw)
-                self.arr_decls.add(name)
+                self.arr_decls[name] = elem_t
                 self.needed_includes.add('stb_ds')
                 star = '*' if elem_t.endswith('*') else ' *'
                 if cap is not None:
@@ -811,7 +826,7 @@ class SimplCTranspiler:
         self.user_imports = set()
         self.struct_names = set()
         self.map_decls = {}
-        self.arr_decls = set()
+        self.arr_decls = {}
         self.generated_map_structs = {}
         self.prototypes = []
         self.struct_definitions = []
@@ -826,6 +841,7 @@ class SimplCTranspiler:
             self.try_map_put,
             self.try_function,
             self.try_for_range,
+            self.try_for_list,
             self.try_else_if,
             self.try_else,
             self.try_control,
@@ -935,6 +951,8 @@ class SimplCTranspiler:
                     block_indents.append((indent, 'code'))
                 elif is_block:
                     output.append(text + ' {')
+                    if isinstance(is_block, list):
+                        output.extend(is_block)
                     block_indents.append((indent, 'code'))
                 else:
                     output.append(self._semi(text))
