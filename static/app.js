@@ -249,9 +249,16 @@ function showEmptyEditor() {
   updateDirty();
 }
 
-function closeFile(path) {
+async function closeFile(path) {
   const f = state.openFiles.get(path);
-  if (f && f.dirty && !confirm(`Discard unsaved changes to ${path}?`)) return;
+  if (f && f.dirty) {
+    const discard = await showConfirm({
+      title: "Discard changes",
+      message: `Discard unsaved changes to ${path}?`,
+      okLabel: "Discard",
+    });
+    if (!discard) return;
+  }
   state.openFiles.delete(path);
   if (state.active === path) {
     state.active = null;
@@ -392,6 +399,37 @@ function showModal(title, placeholder, okLabel, onOk) {
   };
 }
 
+// ── confirm modal (delete / discard) ─────────────────────────────────────────
+// A promise-based replacement for the native window.confirm() popup.
+function showConfirm({ title, message, okLabel = "Delete", danger = true }) {
+  return new Promise((resolve) => {
+    const overlay = $("#confirm-overlay");
+    $("#confirm-title").textContent = title;
+    $("#confirm-message").textContent = message;
+    const ok = $("#confirm-ok");
+    const cancel = $("#confirm-cancel");
+    ok.textContent = okLabel;
+    ok.className = "btn " + (danger ? "btn-danger" : "btn-primary");
+    overlay.hidden = false;
+    setTimeout(() => ok.focus(), 0);
+
+    const close = (result) => {
+      overlay.hidden = true;
+      ok.onclick = cancel.onclick = overlay.onclick = null;
+      document.removeEventListener("keydown", onKey, true);
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); close(false); }
+      else if (e.key === "Enter") { e.preventDefault(); close(true); }
+    };
+    ok.onclick = () => close(true);
+    cancel.onclick = () => close(false);
+    overlay.onclick = (e) => { if (e.target === overlay) close(false); };
+    document.addEventListener("keydown", onKey, true);
+  });
+}
+
 function newFile() {
   showModal("New file", "path/to/file.opc", "Create", async (name) => {
     await jsonPost("/api/create", { path: name, type: "file" });
@@ -410,7 +448,12 @@ function newFolder() {
 }
 
 async function deleteEntry(path, name) {
-  if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+  const confirmed = await showConfirm({
+    title: "Delete",
+    message: `Delete "${name}"? This cannot be undone.`,
+    okLabel: "Delete",
+  });
+  if (!confirmed) return;
   try {
     await jsonPost("/api/delete", { path });
     if (state.openFiles.has(path)) {
