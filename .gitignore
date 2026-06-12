@@ -1,0 +1,32 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Transpiler / compiler build artifacts
+# Generated C from .opc sources and the binaries gcc produces.
+# (examples/utils.c and examples/utils.h are kept on purpose — the test
+#  suite links against them, so they are tracked explicitly below.)
+*.o
+*.obj
+*.out
+
+# Compiled example binaries (ELF executables, no extension)
+examples/main
+examples/test
+
+# Generated C output from the example .opc programs
+examples/main.c
+examples/test.c
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
