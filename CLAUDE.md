@@ -22,7 +22,7 @@ gcc output.c -o program -lm
 gcc -Wall -Wextra output.c -o program -lm
 ```
 
-For programs using `arr[T]` or `map[K,V]`, `stb_ds.h` must be in the same directory as the output `.c` file (it is bundled here).
+For programs using `list[T]` or `map[K,V]`, `stb_ds.h` must be in the same directory as the output `.c` file (it is bundled here).
 
 ## Transpiler architecture (`transpiler.py`)
 
@@ -37,7 +37,7 @@ The `SimplCTranspiler` class owns all state and logic:
 - **Block tracking** — a stack (`block_indents`) of `(indent_level, block_type)` pairs drives `{`/`}` emission. Block types are `'code'`, `'else_block'`, or `('struct', name)`.
 - **`_semi`** — appends `;` to lines that aren't blank, comments, preprocessor directives, or already terminated.
 - **`_build_includes` / `_build_map_structs`** — emit preamble (sorted `#include`s, then stb_ds, then generated map `typedef`s).
-- **`resolve_type`** — converts SimplC type notation (`arr[T]`, `map[K,V]`, `i32`, `char*`, etc.) to C types.
+- **`resolve_type`** — converts SimplC type notation (`list[T]`, `map[K,V]`, `i32`, `char*`, etc.) to C types.
 
 ### Key SimplC → C mappings
 
@@ -48,7 +48,8 @@ The `SimplCTranspiler` class owns all state and logic:
 | `for i in range(n):` | `for (int i = 0; i < n; i++) {` |
 | `elif cond:` | `} else if (cond) {` |
 | `struct Foo:` | `typedef struct Foo { ... } Foo;` |
-| `a: arr[int] = NULL` | `int *a = NULL;` + stb_ds |
+| `a: list[int] = []` | `int *a = NULL;` + stb_ds |
+| `a: list[int] = [N]` | `int *a = NULL; arrsetcap(a, N);` + stb_ds |
 | `a.append(x)` / `a.pop()` / `a.insert(i,x)` | `arrput` / `arrpop` / `arrins` |
 | `del a[i]` / `a.free()` | `arrdel` / `arrfree` |
 | `len(a)` | `arrlen(a)` |

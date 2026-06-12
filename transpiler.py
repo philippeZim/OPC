@@ -2,7 +2,7 @@
 """
 SimplC -> C Transpiler
 Converts a simplified, Python-inspired C dialect into compilable C code.
-Supports stb_ds dynamic arrays and hash maps via arr[T] and map[K,V] syntax.
+Supports stb_ds dynamic arrays and hash maps via list[T] and map[K,V] syntax.
 """
 
 import os
@@ -76,8 +76,8 @@ class SimplCTranspiler:
         return raw.replace(' ', '').replace('*', 'ptr').replace('[', '_').replace(']', '_')
 
     def resolve_type(self, raw_type: str) -> str:
-        # arr[T] → T *
-        arr_m = re.match(r'^arr\[(.+)\]$', raw_type.strip())
+        # list[T] → T *
+        arr_m = re.match(r'^list\[(.+)\]$', raw_type.strip())
         if arr_m:
             inner = self.resolve_type(arr_m.group(1).strip())
             if inner.endswith('*'):
@@ -141,8 +141,8 @@ class SimplCTranspiler:
         if ids & self.ASSERT_FUNCS:  self.needed_includes.add('assert')
         if ids & self.CTYPE_FUNCS:   self.needed_includes.add('ctype')
         if ids & self.STBDS_FUNCS:   self.needed_includes.add('stb_ds')
-        # arr[] / map[] in source also trigger stb_ds
-        if re.search(r'\barr\[', code) or re.search(r'\bmap\[', code):
+        # list[] / map[] in source also trigger stb_ds
+        if re.search(r'\blist\[', code) or re.search(r'\bmap\[', code):
             self.needed_includes.add('stb_ds')
 
     # ── utility ───────────────────────────────────────────────────
@@ -480,14 +480,21 @@ class SimplCTranspiler:
             indent, name, raw, val = m.group(1), m.group(2), m.group(3).strip(), m.group(4).strip()
             if name in self.RESERVED: return None
 
-            arr_m = re.match(r'^arr\[(.+)\]$', raw)
+            arr_m = re.match(r'^list\[(.+)\]$', raw)
             if arr_m:
                 elem_t = self.resolve_type(arr_m.group(1).strip())
                 self.arr_decls.add(name)
                 self.needed_includes.add('stb_ds')
-                if elem_t.endswith('*'):
-                    return (f'{indent}{elem_t}*{name} = {val}', False)
-                return (f'{indent}{elem_t} *{name} = {val}', False)
+                star = '*' if elem_t.endswith('*') else ' *'
+                cap_m = re.match(r'^\[\s*(\d+)\s*\]$', val)
+                empty_m = re.match(r'^\[\s*\]$', val)
+                if empty_m:
+                    return (f'{indent}{elem_t}{star}{name} = NULL', False)
+                elif cap_m:
+                    cap = cap_m.group(1)
+                    return (f'{indent}{elem_t}{star}{name} = NULL;\n{indent}arrsetcap({name}, {cap})', False)
+                else:
+                    return (f'{indent}{elem_t}{star}{name} = {val}', False)
 
             map_m = re.match(r'^map\[(.+?),\s*(.+)\]$', raw)
             if map_m:
@@ -510,7 +517,7 @@ class SimplCTranspiler:
             indent, name, raw = m.group(1), m.group(2), m.group(3).strip()
             if name in self.RESERVED: return None
 
-            arr_m = re.match(r'^arr\[(.+)\]$', raw)
+            arr_m = re.match(r'^list\[(.+)\]$', raw)
             if arr_m:
                 elem_t = self.resolve_type(arr_m.group(1).strip())
                 self.arr_decls.add(name)

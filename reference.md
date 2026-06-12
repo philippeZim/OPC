@@ -438,18 +438,19 @@ int main() {
 
 ---
 
-## 6. Dynamic Arrays — `arr[T]`
+## 6. Dynamic Arrays — `list[T]`
 
 Dynamic arrays use [stb_ds.h](https://github.com/nothings/stb). Place `stb_ds.h` in the same directory as your output `.c` file.
 
 ### 6.1 Declaration
 
-**`name: arr[T] = NULL`** declares a dynamic array of element type `T`:
+**`name: list[T] = []`** declares an empty dynamic array of element type `T`. Optionally pass an integer inside `[]` to pre-allocate capacity:
 
 ```python
-nums: arr[int] = NULL
-words: arr[char*] = NULL
-points: arr[Point] = NULL
+nums: list[int] = []
+words: list[char*] = []
+points: list[Point] = []
+big: list[double] = [1000]
 ```
 
 Transpiles to:
@@ -458,6 +459,8 @@ Transpiles to:
 int *nums = NULL;
 char **words = NULL;
 Point *points = NULL;
+double *big = NULL;
+arrsetcap(big, 1000);
 ```
 
 The transpiler auto-emits `#define STB_DS_IMPLEMENTATION` and `#include "stb_ds.h"`.
@@ -466,7 +469,7 @@ The transpiler auto-emits `#define STB_DS_IMPLEMENTATION` and `#include "stb_ds.
 
 ```python
 fn main() -> int:
-    nums: arr[int] = NULL
+    nums: list[int] = []
 
     // Append
     nums.append(10)
@@ -490,9 +493,8 @@ fn main() -> int:
     // Delete at index
     del nums[0]
 
-    // Pre-allocate capacity (raw stb_ds macro, no Pythonic wrapper)
-    big: arr[double] = NULL
-    arrsetcap(big, 1000)
+    // Pre-allocate capacity at declaration
+    big: list[double] = [1000]
 
     // Free
     nums.free()
@@ -544,7 +546,7 @@ struct Point:
     y: int
 
 fn main() -> int:
-    points: arr[Point] = NULL
+    points: list[Point] = []
     points.append(((Point){1, 2}))
     points.append(((Point){3, 4}))
 
@@ -559,6 +561,8 @@ fn main() -> int:
 
 | SimplC | C | Description |
 |--------|---|-------------|
+| `a: list[T] = []` | `T *a = NULL;` | Declare empty dynamic array |
+| `a: list[T] = [N]` | `T *a = NULL; arrsetcap(a, N);` | Declare with initial capacity |
 | `a.append(val)` | `arrput(a, val)` | Append value |
 | `a.pop()` | `arrpop(a)` | Remove & return last element |
 | `a.insert(i, val)` | `arrins(a, i, val)` | Insert at index `i` |
@@ -566,7 +570,6 @@ fn main() -> int:
 | `arrdelswap(a, i)` | `arrdelswap(a, i)` | Delete at index `i` (swap with last, O(1)) |
 | `len(a)` | `arrlen(a)` | Length (`ptrdiff_t`) |
 | `arrlenu(a)` | `arrlenu(a)` | Length (`size_t`) |
-| `arrsetcap(a, n)` | `arrsetcap(a, n)` | Pre-allocate capacity |
 | `arrcap(a)` | `arrcap(a)` | Current capacity |
 | `arrsetlen(a, n)` | `arrsetlen(a, n)` | Set length (allocate if needed) |
 | `a.free()` | `arrfree(a)` | Free and set to NULL |
@@ -702,7 +705,7 @@ struct Player:
 
 fn main() -> int:
     // Array of structs
-    players: arr[Player] = NULL
+    players: list[Player] = []
     players.append(((Player){"Alice", 100, 0.0, 0.0}))
     players.append(((Player){"Bob", 80, 5.0, 3.0}))
 
@@ -781,7 +784,7 @@ You never write `#include`. The transpiler scans your code for function calls, t
 | `i8`, `i32`, `u64`, etc. | `#include <stdint.h>` |
 | `assert` | `#include <assert.h>` |
 | `isalpha`, `toupper`, `isdigit`, etc. | `#include <ctype.h>` |
-| `arr[T]`, `map[K,V]`, `arrput`, `hmput`, etc. | `#define STB_DS_IMPLEMENTATION` + `#include "stb_ds.h"` |
+| `list[T]`, `map[K,V]`, `arrput`, `hmput`, etc. | `#define STB_DS_IMPLEMENTATION` + `#include "stb_ds.h"` |
 
 Example — all includes detected automatically:
 
@@ -941,7 +944,7 @@ fn main() -> int:
     freq: map[char*, int] = NULL
     freq.default(0)
 
-    words: arr[char*] = NULL
+    words: list[char*] = []
     words.append("hello")
     words.append("world")
     words.append("hello")
@@ -978,6 +981,7 @@ int main() {
     shdefault(freq, 0);
 
     char **words = NULL;
+
     arrput(words, "hello");
     arrput(words, "world");
     arrput(words, "hello");
@@ -1024,7 +1028,7 @@ gcc output.c -o program -lm
 gcc -Wall -Wextra output.c -o program -lm
 ```
 
-For programs using `arr[T]` or `map[K,V]`, place `stb_ds.h` in the same directory as the output `.c` file. The transpiler emits `#define STB_DS_IMPLEMENTATION` automatically, so you only need the single header — no separate compilation step.
+For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directory as the output `.c` file. The transpiler emits `#define STB_DS_IMPLEMENTATION` automatically, so you only need the single header — no separate compilation step.
 
 ---
 
@@ -1044,7 +1048,7 @@ For programs using `arr[T]` or `map[K,V]`, place `stb_ds.h` in the same director
 | switch | `switch expr:` | `switch (expr) {` |
 | struct | `struct Name:` | `typedef struct Name {` |
 | print | `print("hi")` | `printf("hi\n");` |
-| dyn array | `a: arr[int] = NULL` | `int *a = NULL;` |
+| dyn array | `a: list[int] = []` | `int *a = NULL;` |
 | arr append | `a.append(x)` | `arrput(a, x);` |
 | arr pop | `a.pop()` | `arrpop(a)` |
 | arr insert | `a.insert(i, x)` | `arrins(a, i, x);` |
