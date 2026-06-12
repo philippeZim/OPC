@@ -25,7 +25,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from transpiler import SimplCTranspiler  # noqa: E402
 
-STB_DS_HEADER = PROJECT_ROOT / "examples" / "stb_ds.h"
+STB_DS_HEADER = PROJECT_ROOT / "stb_ds.h"
 
 
 @dataclass

@@ -7,6 +7,7 @@ Supports stb_ds dynamic arrays and hash maps via list[T] and map[K,V] syntax.
 
 import os
 import re
+import shutil
 import sys
 
 
@@ -963,6 +964,15 @@ class SimplCTranspiler:
         return "\n".join(lines)
 
 
+def _same_file(a: str, b: str) -> bool:
+    """True if both files exist with identical contents (skip needless re-copy)."""
+    try:
+        with open(a, 'rb') as fa, open(b, 'rb') as fb:
+            return fa.read() == fb.read()
+    except OSError:
+        return False
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python transpiler.py <input.sc> [output.c] [--header]")
@@ -987,9 +997,19 @@ def main():
     t = SimplCTranspiler()
     c_code = t.transpile(src)
     
-    with open(outf, 'w') as f: 
+    with open(outf, 'w') as f:
         f.write(c_code)
     print(f"Transpiled {inf} -> {outf}")
+
+    # stb_ds.h is needed whenever list[T]/map[K,V] are used. Ship it next to the
+    # output automatically so the user never has to copy it by hand.
+    if 'stb_ds' in t.needed_includes:
+        bundled = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stb_ds.h')
+        dest = os.path.join(os.path.dirname(os.path.abspath(outf)) or '.', 'stb_ds.h')
+        if os.path.abspath(bundled) != os.path.abspath(dest):
+            if not os.path.exists(dest) or not _same_file(bundled, dest):
+                shutil.copyfile(bundled, dest)
+                print(f"Provided stb_ds.h -> {dest}")
     
     # Auto-generate header if exported structs/functions exist, or if explicitly requested
     if force_header or t.prototypes or t.struct_definitions or t.generated_map_structs:
