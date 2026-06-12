@@ -59,7 +59,7 @@ def test_return_compound_literal_runs(run_simplc):
 
 MAP_RHS_REWRITE_SOURCE = """\
 fn main() -> int:
-    m: map[char*, int] = NULL
+    m: map[char*, int] = {}
     m["x"] = 10
     m["x"] = m["x"] + 5
     printf("x=%d\\n", m["x"])
@@ -232,7 +232,7 @@ struct Point:
     y: int
 
 fn main() -> int:
-    cache: map[char*, Point] = NULL
+    cache: map[char*, Point] = {}
     cache["origin"] = ((Point){0, 0})
     cache["corner"] = ((Point){10, 20})
     origin: Point = cache["origin"]
@@ -268,8 +268,8 @@ def test_map_struct_value_runs(run_simplc):
 def test_same_map_type_single_typedef(transpile):
     src = """\
 fn main() -> int:
-    a: map[char*, int] = NULL
-    b: map[char*, int] = NULL
+    a: map[char*, int] = {}
+    b: map[char*, int] = {}
     a["x"] = 1
     b["y"] = 2
     printf("%d %d\\n", a["x"], b["y"])
@@ -288,8 +288,8 @@ fn main() -> int:
 def test_same_map_type_single_typedef_runs(run_simplc):
     src = """\
 fn main() -> int:
-    a: map[char*, int] = NULL
-    b: map[char*, int] = NULL
+    a: map[char*, int] = {}
+    b: map[char*, int] = {}
     a["x"] = 1
     b["y"] = 2
     printf("%d %d\\n", a["x"], b["y"])
@@ -433,7 +433,7 @@ def test_list_no_initializer_transpile(transpile):
 
 MAP_CONDITION_SOURCE = """\
 fn main() -> int:
-    scores: map[char*, int] = NULL
+    scores: map[char*, int] = {}
     scores["alice"] = 95
     if scores["alice"] > 90:
         printf("excellent\\n")
@@ -516,7 +516,7 @@ def test_struct_array_field_runs(run_simplc):
 
 INT_MAP_EXPR_SOURCE = """\
 fn main() -> int:
-    table: map[int, int] = NULL
+    table: map[int, int] = {}
     table[1] = 100
     table[2] = 200
     total: int = table[1] + table[2]

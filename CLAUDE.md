@@ -53,7 +53,7 @@ The `SimplCTranspiler` class owns all state and logic:
 | `a.append(x)` / `a.pop()` / `a.insert(i,x)` | `arrput` / `arrpop` / `arrins` |
 | `del a[i]` / `a.free()` | `arrdel` / `arrfree` |
 | `len(a)` | `arrlen(a)` |
-| `m: map[K,V] = NULL` | typedef'd struct pointer + stb_ds |
+| `m: map[K,V] = {}` | typedef'd struct pointer + stb_ds |
 | `m[key] = val` / `m[key]` / `del m[key]` | `shput/hmput` / `shget/hmget` / `shdel/hmdel` |
 | `len(m)` / `key in m` / `key not in m` | `shlen/hmlen` / `shgeti/hmgeti >= 0` / `< 0` |
 | `m.default(val)` / `m.free()` | `shdefault/hmdefault` / `shfree/hmfree` |

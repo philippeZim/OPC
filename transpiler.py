@@ -539,7 +539,9 @@ class SimplCTranspiler:
                 self._ensure_map_struct(key_t, val_t, sname)
                 is_str = self._is_string_key(key_t)
                 self.map_decls[name] = (key_t, val_t, sname, is_str)
-                return (f'{indent}{sname} *{name} = {val}', False)
+                empty_m = re.match(r'^\{\s*\}$', val)
+                c_val = 'NULL' if empty_m else val
+                return (f'{indent}{sname} *{name} = {c_val}', False)
 
             ct = self.resolve_type(raw)
             arr = re.match(r'^(.+?)(\[.+\])$', ct)

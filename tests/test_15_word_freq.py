@@ -4,7 +4,7 @@ from tests.conftest import assert_runs, assert_transpiles_to
 
 WORD_FREQ_SOURCE = """\
 fn main() -> int:
-    freq: map[char*, int] = NULL
+    freq: map[char*, int] = {}
     freq.default(0)
 
     words: list[char*] = []

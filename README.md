@@ -582,11 +582,11 @@ Hash maps use stb_ds.h under the hood — all stb_ds details are hidden.
 
 ### 7.1 Declaration
 
-**`name: map[K, V] = NULL`** declares a hash map with key type `K` and value type `V`:
+**`name: map[K, V] = {}`** declares a hash map with key type `K` and value type `V`:
 
 ```python
-scores: map[char*, int] = NULL
-ages: map[int, double] = NULL
+scores: map[char*, int] = {}
+ages: map[int, double] = {}
 ```
 
 ### 7.2 Put, Get, Delete
@@ -627,7 +627,7 @@ if (shgeti(scores, "dave") < 0) {
 ### 7.4 Default Values
 
 ```python
-config: map[char*, int] = NULL
+config: map[char*, int] = {}
 config.default(0)
 config["width"] = 1920
 
@@ -637,7 +637,7 @@ missing: int = config["nonexistent"]   // returns 0
 Works the same for integer-keyed maps:
 
 ```python
-ages: map[int, double] = NULL
+ages: map[int, double] = {}
 ages.default(-1.0)
 printf("missing: %f\n", ages[9999])   // prints -1.0
 ```
@@ -679,7 +679,7 @@ fn lookup(db: map[char*, int], key: char*) -> int:
 
 | SimplC | Description |
 |--------|-------------|
-| `m: map[K, V] = NULL` | Declare a map |
+| `m: map[K, V] = {}` | Declare a map |
 | `m[key] = val` | Insert / update |
 | `m[key]` | Get value |
 | `del m[key]` | Delete entry |
@@ -713,7 +713,7 @@ fn main() -> int:
         printf("%s: hp=%d\n", players[i].name, players[i].health)
 
     // Map for quick lookup by name
-    index: map[char*, int] = NULL
+    index: map[char*, int] = {}
     for i in range(len(players)):
         index[players[i].name] = i
 
@@ -941,7 +941,7 @@ A word frequency counter combining structs, dynamic arrays, and hash maps:
 
 ```python
 fn main() -> int:
-    freq: map[char*, int] = NULL
+    freq: map[char*, int] = {}
     freq.default(0)
 
     words: list[char*] = []
@@ -1055,7 +1055,7 @@ For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directo
 | arr delete | `del a[i]` | `arrdel(a, i);` |
 | arr length | `len(a)` | `arrlen(a)` |
 | arr free | `a.free()` | `arrfree(a);` |
-| map decl | `m: map[K, V] = NULL` | typedef + pointer |
+| map decl | `m: map[K, V] = {}` | typedef + pointer |
 | map put | `m[key] = val` | `shput/hmput` |
 | map get | `m[key]` | `shget/hmget` |
 | map del | `del m[key]` | `shdel/hmdel` |
