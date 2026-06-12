@@ -17,7 +17,7 @@ fn main() -> int:
     for i in range(len(players)):
         printf("%s: hp=%d\\n", players[i].name, players[i].health)
 
-    index: map[char*, int] = NULL
+    index: map[char*, int] = {}
     for i in range(len(players)):
         index[players[i].name] = i
 

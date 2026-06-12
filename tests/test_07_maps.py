@@ -7,7 +7,7 @@ from tests.conftest import assert_runs, assert_transpiles_to
 
 STRING_KEY_OPS_SOURCE = """\
 fn main() -> int:
-    scores: map[char*, int] = NULL
+    scores: map[char*, int] = {}
     scores["alice"] = 100
     scores["bob"] = 200
     x: int = scores["alice"]
@@ -47,7 +47,7 @@ def test_string_key_ops_runs(run_simplc):
 
 INT_KEY_OPS_SOURCE = """\
 fn main() -> int:
-    ages: map[int, double] = NULL
+    ages: map[int, double] = {}
     ages[1] = 30.5
     ages[2] = 25.0
     printf("age1=%f age2=%f\\n", ages[1], ages[2])
@@ -82,7 +82,7 @@ def test_int_key_ops_runs(run_simplc):
 
 EXISTS_SOURCE = """\
 fn main() -> int:
-    scores: map[char*, int] = NULL
+    scores: map[char*, int] = {}
     scores["alice"] = 100
     if "alice" in scores:
         printf("found\\n")
@@ -112,7 +112,7 @@ def test_in_not_in_runs(run_simplc):
 
 DEFAULT_STR_SOURCE = """\
 fn main() -> int:
-    config: map[char*, int] = NULL
+    config: map[char*, int] = {}
     config.default(0)
     config["width"] = 1920
     missing: int = config["nonexistent"]
@@ -136,7 +136,7 @@ def test_default_string_key_runs(run_simplc):
 
 DEFAULT_INT_SOURCE = """\
 fn main() -> int:
-    ages: map[int, double] = NULL
+    ages: map[int, double] = {}
     ages.default(-1.0)
     printf("missing: %f\\n", ages[9999])
     ages.free()
@@ -161,7 +161,7 @@ def test_default_int_key_runs(run_simplc):
 
 ITERATE_SOURCE = """\
 fn main() -> int:
-    scores: map[char*, int] = NULL
+    scores: map[char*, int] = {}
     scores["alice"] = 100
     scores["bob"] = 200
     for i in range(len(scores)):
@@ -193,8 +193,8 @@ def test_iteration_runs(run_simplc):
 
 FREE_SOURCE = """\
 fn main() -> int:
-    a: map[char*, int] = NULL
-    b: map[int, double] = NULL
+    a: map[char*, int] = {}
+    b: map[int, double] = {}
     a.free()
     b.free()
     return 0
@@ -217,7 +217,7 @@ fn lookup(db: map[char*, int], key: char*) -> int:
     return db[key]
 
 fn main() -> int:
-    db: map[char*, int] = NULL
+    db: map[char*, int] = {}
     db["x"] = 42
     printf("x=%d\\n", lookup(db, "x"))
     db.free()
