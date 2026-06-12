@@ -49,11 +49,12 @@ The `SimplCTranspiler` class owns all state and logic:
 | `elif cond:` | `} else if (cond) {` |
 | `struct Foo:` | `typedef struct Foo { ... } Foo;` |
 | `a: list[int] = []` | `int *a = NULL;` + stb_ds |
-| `a: list[int] = [N]` | `int *a = NULL; arrsetcap(a, N);` + stb_ds |
+| `a: list[int] = [1, 2, 3]` | `int *a = NULL; arrput(a, 1); ...` + stb_ds |
+| `a: list[int](N) = []` | `int *a = NULL; arrsetcap(a, N);` + stb_ds |
 | `a.append(x)` / `a.pop()` / `a.insert(i,x)` | `arrput` / `arrpop` / `arrins` |
 | `del a[i]` / `a.free()` | `arrdel` / `arrfree` |
 | `len(a)` | `arrlen(a)` |
-| `m: map[K,V] = {}` | typedef'd struct pointer + stb_ds |
+| `m: map[K,V] = {}` / `{k: v, ...}` | typedef'd struct pointer (+ `shput`/`hmput` per pair) + stb_ds |
 | `m[key] = val` / `m[key]` / `del m[key]` | `shput/hmput` / `shget/hmget` / `shdel/hmdel` |
 | `len(m)` / `key in m` / `key not in m` | `shlen/hmlen` / `shgeti/hmgeti >= 0` / `< 0` |
 | `m.default(val)` / `m.free()` | `shdefault/hmdefault` / `shfree/hmfree` |

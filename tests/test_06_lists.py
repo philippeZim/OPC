@@ -9,7 +9,7 @@ DECL_SOURCE = """\
 fn main() -> int:
     nums: list[int] = []
     words: list[char*] = []
-    big: list[double] = [1000]
+    big: list[double](1000) = []
     nums.free()
     words.free()
     big.free()
@@ -190,3 +190,47 @@ def test_arrdelswap_runs(run_simplc):
     result = run_simplc(ARRDELSWAP_SOURCE)
     assert result.ok, f"compile stderr:\n{result.compile.stderr}\nrun stderr:\n{result.stderr}"
     assert result.stdout == "first: 3\n"
+
+
+# ── §6.1 literal initialization and capacity (new syntax) ──────────
+
+
+LITERAL_INIT_SOURCE = """\
+fn main() -> int:
+    vals: list[int] = [1, 2, 3]
+    capped: list[int](10) = []
+    both: list[int](10) = [4, 5, 6]
+    total: int = 0
+    for i in range(len(vals)):
+        total += vals[i]
+    for i in range(len(both)):
+        total += both[i]
+    printf("total=%d caplen=%ld\\n", total, len(capped))
+    vals.free()
+    capped.free()
+    both.free()
+    return 0
+"""
+
+
+def test_literal_init_transpile(transpile):
+    c = transpile(LITERAL_INIT_SOURCE)
+    assert_transpiles_to(c, [
+        'int *vals = NULL;',
+        'arrput(vals, 1);',
+        'arrput(vals, 2);',
+        'arrput(vals, 3);',
+        'int *capped = NULL;',
+        'arrsetcap(capped, 10);',
+        'int *both = NULL;',
+        'arrsetcap(both, 10);',
+        'arrput(both, 4);',
+        'arrput(both, 5);',
+        'arrput(both, 6);',
+    ])
+
+
+def test_literal_init_runs(run_simplc):
+    result = run_simplc(LITERAL_INIT_SOURCE)
+    assert result.ok, f"compile stderr:\n{result.compile.stderr}\nrun stderr:\n{result.stderr}"
+    assert result.stdout == "total=21 caplen=0\n"
