@@ -270,9 +270,36 @@ class SimplCTranspiler:
             return (inner.strip(), None)
         if after.startswith('('):
             pc = self._find_paren_content(after, 0)
-            if pc and pc[1] == len(after):
+            if pc and pc[1] == len(after) and pc[0].strip():
                 return (inner.strip(), pc[0].strip())
         return None
+
+    def _parse_map_type(self, raw: str):
+        """Parse `map[K, V]` or `map[K, V](default_expr)`.
+
+        Returns (key_type, val_type, default_expr_or_None) or None.
+        """
+        raw = raw.strip()
+        if not raw.startswith('map['):
+            return None
+        bracket_start = raw.index('[')
+        inner = self._find_bracket_expr(raw, bracket_start)
+        if inner is None:
+            return None
+        # Split the bracket contents on its first top-level comma.
+        key_t, sep, val_t = inner.partition(',')
+        if not sep:
+            return None
+        after = raw[bracket_start + len(inner) + 2:].strip()
+        default_expr = None
+        if after:
+            if not after.startswith('('):
+                return None
+            pc = self._find_paren_content(after, 0)
+            if pc is None or pc[1] != len(after) or not pc[0].strip():
+                return None
+            default_expr = pc[0].strip()
+        return (key_t.strip(), val_t.strip(), default_expr)
 
     def _parse_list_literal(self, val: str):
         """Parse `[e1, e2, ...]`. Returns list of element exprs, or None if not a literal."""
@@ -718,10 +745,11 @@ class SimplCTranspiler:
                     stmts.append(f'{indent}arrput({name}, {e})')
                 return (';\n'.join(stmts), False)
 
-            map_m = re.match(r'^map\[(.+?),\s*(.+)\]$', raw)
-            if map_m:
-                key_t = self.resolve_type(map_m.group(1).strip())
-                val_t = self.resolve_type(map_m.group(2).strip())
+            map_info = self._parse_map_type(raw)
+            if map_info is not None:
+                key_raw, val_raw, default_expr = map_info
+                key_t = self.resolve_type(key_raw)
+                val_t = self.resolve_type(val_raw)
                 sname = self._map_struct_name(key_t, val_t)
                 self._ensure_map_struct(key_t, val_t, sname)
                 is_str = self._is_string_key(key_t)
@@ -729,9 +757,16 @@ class SimplCTranspiler:
                 pairs = self._parse_map_literal(val)
                 if pairs is None:
                     # Not a literal (e.g. `= NULL` or another map) — assign directly.
-                    return (f'{indent}{sname} *{name} = {val}', False)
+                    stmts = [f'{indent}{sname} *{name} = {val}']
+                    if default_expr is not None:
+                        default_f = 'shdefault' if is_str else 'hmdefault'
+                        stmts.append(f'{indent}{default_f}({name}, {default_expr})')
+                    return (';\n'.join(stmts), False)
                 func = 'shput' if is_str else 'hmput'
+                default_f = 'shdefault' if is_str else 'hmdefault'
                 stmts = [f'{indent}{sname} *{name} = NULL']
+                if default_expr is not None:
+                    stmts.append(f'{indent}{default_f}({name}, {default_expr})')
                 for k, v in pairs:
                     stmts.append(f'{indent}{func}({name}, {k}, {v})')
                 return (';\n'.join(stmts), False)
@@ -742,7 +777,7 @@ class SimplCTranspiler:
             return (f'{indent}{ct} {name} = {val}', False)
 
         # name: type  (no initializer)
-        m = re.match(r'^(\s*)(\w+)\s*:\s*(\S+)\s*$', s)
+        m = re.match(r'^(\s*)(\w+)\s*:\s*(.+?)\s*$', s)
         if m:
             indent, name, raw = m.group(1), m.group(2), m.group(3).strip()
             if name in self.RESERVED: return None
@@ -761,15 +796,23 @@ class SimplCTranspiler:
                     ]), False)
                 return (f'{indent}{elem_t}{star}{name}', False)
 
-            map_m = re.match(r'^map\[(.+?),\s*(.+)\]$', raw)
-            if map_m:
-                key_t = self.resolve_type(map_m.group(1).strip())
-                val_t = self.resolve_type(map_m.group(2).strip())
+            map_info = self._parse_map_type(raw)
+            if map_info is not None:
+                key_raw, val_raw, default_expr = map_info
+                key_t = self.resolve_type(key_raw)
+                val_t = self.resolve_type(val_raw)
                 sname = self._map_struct_name(key_t, val_t)
                 self._ensure_map_struct(key_t, val_t, sname)
                 is_str = self._is_string_key(key_t)
                 self.map_decls[name] = (key_t, val_t, sname, is_str)
-                return (f'{indent}{sname} *{name}', False)
+                if default_expr is None:
+                    return (f'{indent}{sname} *{name}', False)
+                default_f = 'shdefault' if is_str else 'hmdefault'
+                stmts = [
+                    f'{indent}{sname} *{name} = NULL',
+                    f'{indent}{default_f}({name}, {default_expr})',
+                ]
+                return (';\n'.join(stmts), False)
 
             ct = self.resolve_type(raw)
             arr = re.match(r'^(.+?)(\[.+\])$', ct)
