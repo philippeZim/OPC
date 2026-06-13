@@ -100,6 +100,7 @@
   var TYPE_SNIPPETS = [
     ["list", "list[$|]", "dynamic array"],
     ["map", "map[$|, ]", "hash map"],
+    ["fn", "fn($|) -> ", "function pointer type"],
   ];
 
   // ── completion helpers ─────────────────────────────────────────────────────
