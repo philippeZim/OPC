@@ -76,6 +76,7 @@ class SimplCTranspiler:
         self.prototypes = []
         self.struct_definitions = []
         self.current_struct_lines = []
+        self.leak_warnings = []
 
     # ── type helpers ──────────────────────────────────────────────
 
@@ -314,6 +315,69 @@ class SimplCTranspiler:
             return None
         return (elem_raw, m.group(2).strip())
 
+    def _alloc_sizeof(self, ct: str, val: str):
+        """Infer the element size for `malloc`/`calloc` from the declared type.
+
+        `arr: int* = malloc(10)` should allocate room for 10 ints, not 10
+        bytes, so we multiply by `sizeof(elem)`. A call that already mentions
+        `sizeof` is left untouched (the user opted into the explicit form).
+        Returns the rewritten allocation string, or None when nothing applies.
+        """
+        if not ct.endswith('*'):
+            return None
+        elem = ct[:-1].strip()
+        m = re.match(r'^(malloc|calloc)\s*\(\s*(.+)\)\s*$', val.strip())
+        if not m:
+            return None
+        fn, arg = m.group(1), m.group(2).strip()
+        if 'sizeof' in arg:
+            return None
+        if len(self._split_top_level(arg)) != 1:
+            return None  # already (n, size) form — leave it alone
+        if fn == 'malloc':
+            return f'malloc(({arg}) * sizeof({elem}))'
+        return f'calloc({arg}, sizeof({elem}))'
+
+    def _oom_guard(self, indent: str, name: str) -> str:
+        """A one-line `if (name == NULL) exit(...)` that aborts on a failed
+        allocation, so the user never has to null-check malloc themselves."""
+        self.needed_includes.add('stdio')
+        self.needed_includes.add('stdlib')
+        return (f'{indent}if ({name} == NULL) '
+                f'exit((fprintf(stderr, "opc: out of memory: {name}\\n"), 1))')
+
+    def _parse_fn_type(self, raw: str):
+        """Parse a function-pointer type `fn(T1, T2, ...) -> R`.
+
+        Returns (ret_c_type, [arg_c_types]) or None. This is the SimplC
+        shorthand for C's awkward `R (*name)(T1, T2)` declarator syntax.
+        """
+        raw = raw.strip()
+        if not re.match(r'^fn\s*\(', raw):
+            return None
+        paren = raw.index('(')
+        pc = self._find_paren_content(raw, paren)
+        if pc is None:
+            return None
+        args_str, end = pc
+        after = raw[end:].strip()
+        am = re.match(r'^->\s*(.+)$', after)
+        if not am:
+            return None
+        ret_t = self.resolve_type(am.group(1).strip())
+        args_str = args_str.strip()
+        if args_str:
+            arg_types = [self.resolve_type(a.strip())
+                         for a in self._split_args(args_str)]
+        else:
+            arg_types = []
+        return (ret_t, arg_types)
+
+    def _fn_ptr_decl(self, ret_t: str, arg_types: list, name: str) -> str:
+        """Build a C function-pointer declarator `R (*name)(args)`."""
+        args = ', '.join(arg_types) if arg_types else 'void'
+        return f'{ret_t} (*{name})({args})'
+
     def _parse_list_literal(self, val: str):
         """Parse `[e1, e2, ...]`. Returns list of element exprs, or None if not a literal."""
         val = val.strip()
@@ -339,6 +403,16 @@ class SimplCTranspiler:
                 return None
             pairs.append(kv)
         return pairs
+
+    def _io_guard(self, indent: str, name: str, kind: str) -> str:
+        """A one-line guard that aborts when a file read failed, so the user
+        never has to write `if !f.ok:` by hand. `kind` is 'file' (checks the
+        OpcFile.ok flag) or 'lines' (checks for a NULL list)."""
+        self.needed_includes.add('stdio')
+        self.needed_includes.add('stdlib')
+        cond = f'!{name}.ok' if kind == 'file' else f'{name} == NULL'
+        return (f'{indent}if ({cond}) '
+                f'exit((fprintf(stderr, "opc: failed to read file: {name}\\n"), 1))')
 
     # ── transform: map put  (name[key] = val) ────────────────────
 
@@ -622,9 +696,18 @@ class SimplCTranspiler:
     # ── transform: function definition ────────────────────────────
 
     def try_function(self, s):
-        m = re.match(r'^(\s*)fn\s+(\w+)\s*\(([^)]*)\)\s*->\s*(\S+)\s*:\s*$', s)
+        # The parameter list may contain nested parens (e.g. a function-pointer
+        # parameter `f: fn(int, int) -> int`), so we balance-match it rather
+        # than use a naive `[^)]*` regex.
+        m = re.match(r'^(\s*)fn\s+(\w+)\s*\(', s)
         if not m: return None
-        indent, name, pr, ret = m.group(1), m.group(2), m.group(3).strip(), self.resolve_type(m.group(4))
+        indent, name = m.group(1), m.group(2)
+        pc = self._find_paren_content(s, m.end() - 1)
+        if pc is None: return None
+        pr, end = pc
+        rm = re.match(r'^->\s*(.+?)\s*:\s*$', s[end:].strip())
+        if not rm: return None
+        pr, ret = pr.strip(), self.resolve_type(rm.group(1).strip())
         cp = []
         if pr:
             for p in self._split_args(pr):
@@ -632,6 +715,10 @@ class SimplCTranspiler:
                 pm = re.match(r'^(\w+)\s*:\s*(.+)$', p)
                 if pm:
                     pn, raw_t = pm.group(1), pm.group(2).strip()
+                    fn_info = self._parse_fn_type(raw_t)
+                    if fn_info is not None:
+                        cp.append(self._fn_ptr_decl(fn_info[0], fn_info[1], pn))
+                        continue
                     pt = self.resolve_type(raw_t)
                     self._register_container_param(pn, raw_t)
                     arr = re.match(r'^(.+?)(\[.+\])$', pt)
@@ -738,6 +825,12 @@ class SimplCTranspiler:
             indent, name, raw, val = m.group(1), m.group(2), m.group(3).strip(), m.group(4).strip()
             if name in self.RESERVED: return None
 
+            fn_info = self._parse_fn_type(raw)
+            if fn_info is not None:
+                ret_t, arg_types = fn_info
+                decl = self._fn_ptr_decl(ret_t, arg_types, name)
+                return (f'{indent}{decl} = {val}', False)
+
             list_info = self._parse_list_type(raw)
             if list_info is not None:
                 inner_raw, cap = list_info
@@ -748,13 +841,17 @@ class SimplCTranspiler:
                 elems = self._parse_list_literal(val)
                 if elems is None:
                     # Not a literal — direct assignment (e.g. another array / call).
+                    # read_lines() returns NULL on failure: guard it automatically.
+                    guard = ([self._io_guard(indent, name, 'lines')]
+                             if val.startswith('opc_read_lines(') else [])
                     if cap is not None:
                         return (';\n'.join([
                             f'{indent}{elem_t}{star}{name} = NULL',
                             f'{indent}arrsetcap({name}, {cap})',
                             f'{indent}{name} = {val}',
-                        ]), False)
-                    return (f'{indent}{elem_t}{star}{name} = {val}', False)
+                        ] + guard), False)
+                    return (';\n'.join(
+                        [f'{indent}{elem_t}{star}{name} = {val}'] + guard), False)
                 stmts = [f'{indent}{elem_t}{star}{name} = NULL']
                 if cap is not None:
                     stmts.append(f'{indent}arrsetcap({name}, {cap})')
@@ -796,6 +893,19 @@ class SimplCTranspiler:
                 self.fixed_arr_decls[name] = (self.resolve_type(fa[0]), fa[1])
             elif ct.endswith('*') and val.strip() in self.fixed_arr_decls:
                 self.fixed_arr_decls[name] = self.fixed_arr_decls[val.strip()]
+            alloc = self._alloc_sizeof(ct, val)
+            if alloc is not None:
+                return (';\n'.join([
+                    f'{indent}{ct} {name} = {alloc}',
+                    self._oom_guard(indent, name),
+                ]), False)
+            # A `file = read_file(...)` read fails silently in C; guard the
+            # OpcFile.ok flag automatically so the user never writes `if !f.ok:`.
+            if ct == 'OpcFile' and val.startswith('opc_read_file('):
+                return (';\n'.join([
+                    f'{indent}{ct} {name} = {val}',
+                    self._io_guard(indent, name, 'file'),
+                ]), False)
             arr = re.match(r'^(.+?)(\[.+\])$', ct)
             if arr: return (f'{indent}{arr.group(1)} {name}{arr.group(2)} = {val}', False)
             return (f'{indent}{ct} {name} = {val}', False)
@@ -805,6 +915,11 @@ class SimplCTranspiler:
         if m:
             indent, name, raw = m.group(1), m.group(2), m.group(3).strip()
             if name in self.RESERVED: return None
+
+            fn_info = self._parse_fn_type(raw)
+            if fn_info is not None:
+                ret_t, arg_types = fn_info
+                return (f'{indent}{self._fn_ptr_decl(ret_t, arg_types, name)}', False)
 
             list_info = self._parse_list_type(raw)
             if list_info is not None:
@@ -854,9 +969,17 @@ class SimplCTranspiler:
         m = re.match(r'^(\s*)print\((.+)\)\s*$', s)
         if not m: return None
         indent, args = m.group(1), m.group(2)
-        if re.match(r'^".*"$', args.strip()):
-            inner = args.strip()[1:-1]
-            return (f'{indent}printf("{inner}\\n")', False)
+        # Auto-append "\n" to the format string of every print() — including the
+        # formatted form `print("%d", x)` — unless it already ends with one, so
+        # output is line-buffered without writing `\n` by hand each time.
+        parts = self._split_top_level(args)
+        first = parts[0].strip()
+        if re.match(r'^".*"$', first):
+            inner = first[1:-1]
+            if not inner.endswith('\\n'):
+                inner += '\\n'
+            new_args = ', '.join([f'"{inner}"'] + [p.strip() for p in parts[1:]])
+            return (f'{indent}printf({new_args})', False)
         return (f'{indent}printf({args})', False)
 
     # ── transform: struct definition ──────────────────────────────
@@ -875,6 +998,9 @@ class SimplCTranspiler:
         if not m: return None
         name, raw = m.group(1), m.group(2).strip()
         if name in self.RESERVED: return None
+        fn_info = self._parse_fn_type(raw)
+        if fn_info is not None:
+            return f'{indent}{self._fn_ptr_decl(fn_info[0], fn_info[1], name)};'
         ct = self.resolve_type(raw)
         arr = re.match(r'^(.+?)(\[.+\])$', ct)
         if arr: return f'{indent}{arr.group(1)} {name}{arr.group(2)};'
@@ -887,6 +1013,67 @@ class SimplCTranspiler:
     def _pre_scan_functions(self, source: str):
         for m in re.finditer(r'^[ \t]*fn\s+(\w+)\s*\(', source, re.MULTILINE):
             self.user_funcs.add(m.group(1))
+
+    # ── leak tracker ──────────────────────────────────────────────
+    #
+    # A best-effort, transpile-time lint: it flags owned resources
+    # (malloc/calloc, list[T], map[K,V], file) that are never released and
+    # never returned (returning transfers ownership). It is intentionally
+    # conservative about reporting but, being a single-pass textual scan, it
+    # cannot reason across scopes — treat its output as a hint, not a proof.
+
+    _FREE_PATTERNS = (
+        r'\bfree\s*\(\s*(\w+)',
+        r'\b(\w+)\s*\.\s*free\s*\(',
+        r'\bfile_close\s*\(\s*(\w+)',
+        r'\bfree_lines\s*\(\s*(\w+)',
+        r'\b(?:arrfree|shfree|hmfree)\s*\(\s*(\w+)',
+    )
+
+    def _free_hint(self, kind: str, name: str) -> str:
+        return {
+            'malloc': f'free({name})',
+            'list': f'{name}.free()',
+            'map': f'{name}.free()',
+            'file': f'file_close({name})',
+        }.get(kind, f'free({name})')
+
+    def _scan_leaks(self, source: str) -> None:
+        allocated = {}   # name -> kind, in source order
+        freed = set()
+        escaped = set()
+        for raw_line in source.splitlines():
+            line = raw_line.strip()
+            if (not line or line.startswith('//') or line.startswith('/*')
+                    or line.startswith('*') or line.startswith('#')):
+                continue
+            for pat in self._FREE_PATTERNS:
+                for m in re.finditer(pat, line):
+                    freed.add(m.group(1))
+            rm = re.match(r'^return\b(.*)$', line)
+            if rm:
+                escaped.update(re.findall(r'\b(\w+)\b', rm.group(1)))
+            dm = re.match(r'^\s*(\w+)\s*:\s*([^=]+?)\s*=\s*(.+)$', raw_line)
+            if not dm:
+                continue
+            name, raw_t, val = dm.group(1), dm.group(2).strip(), dm.group(3).strip()
+            if name in self.RESERVED:
+                continue
+            if re.match(r'^(malloc|calloc|realloc)\s*\(', val):
+                allocated[name] = 'malloc'
+            elif raw_t.startswith('list['):
+                allocated[name] = 'list'
+            elif raw_t.startswith('map['):
+                allocated[name] = 'map'
+            elif raw_t == 'file' and re.match(r'^read_files?\s*\(', val):
+                allocated[name] = 'file'
+        for name, kind in allocated.items():
+            if name in freed or name in escaped:
+                continue
+            self.leak_warnings.append(
+                f"warning: '{name}' is allocated ({kind}) but never freed; "
+                f"release it with {self._free_hint(kind, name)}"
+            )
 
     # ── main transpile ────────────────────────────────────────────
 
@@ -902,9 +1089,11 @@ class SimplCTranspiler:
         self.prototypes = []
         self.struct_definitions = []
         self.current_struct_lines = []
+        self.leak_warnings = []
         self._pre_scan_structs(source)
         self._pre_scan_functions(source)
         self.detect_auto_includes(source)
+        self._scan_leaks(source)
 
         transforms = [
             self.try_import,
@@ -1179,6 +1368,10 @@ def main():
     with open(outf, 'w') as f:
         f.write(c_code)
     print(f"Transpiled {inf} -> {outf}")
+
+    # Best-effort leak lint: surface owned resources that look unreleased.
+    for warning in t.leak_warnings:
+        print(f"{inf}: {warning}", file=sys.stderr)
 
     # Bundled headers (stb_ds.h for list/map, opc_io.h for file reading) are
     # shipped next to the output automatically so the user never copies them by

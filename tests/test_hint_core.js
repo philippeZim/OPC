@@ -167,6 +167,15 @@ test("detectContext: after `->` switches to a type context", () => {
   assert.equal(hint.detectContext("fn f() -> ", syms).kind, "type");
 });
 
+test("buildList: type context offers the fn(...) function-pointer snippet", () => {
+  const syms = hint.parseSymbols("");
+  const ctx = hint.detectContext("op: ", syms);
+  const list = hint.buildList(ctx, syms);
+  const fn = list.find((c) => c._filter === "fn");
+  assert.ok(fn, "fn snippet should be present in type position");
+  assert.equal(fn.className, "cm-hint-snippet");
+});
+
 test("detectContext: `import` prefix is its own context", () => {
   const syms = hint.parseSymbols("");
   assert.equal(hint.detectContext("import foo", syms).kind, "import");

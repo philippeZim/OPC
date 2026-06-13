@@ -213,6 +213,63 @@ int fibonacci(int n) {
 }
 ```
 
+### 3.3 Function Pointers
+
+C's function-pointer declarator syntax (`int (*op)(int, int)`) is notoriously
+hard to read. SimplC replaces it with a `fn(argTypes) -> retType` type that
+mirrors the `fn` used for definitions:
+
+```python
+fn add(a: int, b: int) -> int:
+    return a + b
+
+fn apply(f: fn(int, int) -> int, x: int, y: int) -> int:
+    return f(x, y)
+
+fn main() -> int:
+    op: fn(int, int) -> int = add
+    printf("%d\n", apply(op, 3, 4))
+    return 0
+```
+
+Transpiles to:
+
+```c
+int add(int a, int b) {
+    return a + b;
+}
+int apply(int (*f)(int, int), int x, int y) {
+    return f(x, y);
+}
+int main() {
+    int (*op)(int, int) = add;
+    printf("%d\n", apply(op, 3, 4));
+    return 0;
+}
+```
+
+The `fn(...) -> ...` type works anywhere a type is expected: variable
+declarations, function parameters, and struct fields. A function name decays to
+a pointer on assignment, so no `&` is needed (`op = add`), and you call through
+the pointer directly (`op(2, 3)`). Use `fn() -> void` for a no-argument
+callback.
+
+```python
+struct Calc:
+    op: fn(int, int) -> int
+    name: char*
+```
+
+```c
+typedef struct Calc {
+    int (*op)(int, int);
+    char * name;
+} Calc;
+```
+
+> Returning a function pointer from a function (C's `int (*f(void))(int)`) is
+> not supported; wrap it in a `struct` or a typedef'd alias instead.
+
 ---
 
 ## 4. Control Flow
@@ -822,31 +879,32 @@ Both C comment styles pass through unchanged:
 
 ## 10. `print()` Shorthand
 
-`print("string")` with a single string literal appends `\n` automatically:
+`print(...)` maps to `printf` and appends `\n` to the format string for you —
+both for a bare string and for the formatted form:
 
 ```python
 print("Hello!")
+print("%d %d", x, y)
 ```
 
 Transpiles to:
 
 ```c
 printf("Hello!\n");
-```
-
-With format arguments, it passes through to `printf` without adding `\n`:
-
-```python
-print("%d %d\n", x, y)
-```
-
-Transpiles to:
-
-```c
 printf("%d %d\n", x, y);
 ```
 
-Standard `printf` always works too — `print` is just shorthand.
+If the format string already ends with `\n`, none is added — so you never get a
+double newline:
+
+```python
+print("%d\n", x)        // → printf("%d\n", x);  (unchanged)
+```
+
+The newline is only appended when the first argument is a string literal. If you
+pass a runtime string (`print(msg)`), it is forwarded unchanged — add your own
+`\n`, or use `printf` directly. Standard `printf` always works too — `print` is
+just shorthand.
 
 ---
 
@@ -987,6 +1045,31 @@ process(big.data, big.size)
 file_close(big)
 ```
 
+#### Automatic failure check
+
+You don't have to write the `if !f.ok:` guard at all — a `file = read_file(...)`
+declaration gets one inserted into the generated C automatically, so a failed
+read aborts loudly instead of leaving you with a half-initialised `OpcFile`:
+
+```python
+fn main() -> int:
+    f: file = read_file("data.txt")   // no manual check needed
+    printf("%s", f.data)
+    file_close(f)
+    return 0
+```
+
+```c
+OpcFile f = opc_read_file("data.txt", "auto");
+if (!f.ok) exit((fprintf(stderr, "opc: failed to read file: f\n"), 1));
+printf("%s", f.data);
+```
+
+The same guard is added for `read_lines` (checking for a `NULL` result). If you
+still want to recover from a failed read yourself, you can — the explicit
+`if !f.ok:` form from above keeps working; the auto-check simply means the
+common case needs no boilerplate.
+
 ### 12.3 Line-oriented text — `read_lines`
 
 `read_lines` returns a `list[char*]` of lines (the trailing newline is stripped), so all the usual `list` operations — `len()`, indexing, iteration — work directly. Release it with `free_lines` (which frees the strings **and** the list).
@@ -1047,7 +1130,64 @@ With `OPC_USE_URING` defined, `read_files` submits all reads through io_uring; w
 
 ---
 
-## 13. Passthrough / Raw C
+## 13. Memory Allocation — `malloc`
+
+C makes you spell out `sizeof` on every allocation and null-check the result
+by hand. SimplC removes both chores.
+
+### 13.1 Element-size inference
+
+`malloc(n)` allocates room for **n elements of the declared pointer's type** —
+the transpiler multiplies by `sizeof(elem)` for you:
+
+```python
+arr: int* = malloc(10)        // room for 10 ints
+buf: char** = malloc(3)       // room for 3 char*
+```
+
+```c
+int * arr = malloc((10) * sizeof(int));
+char ** buf = malloc((3) * sizeof(char *));
+```
+
+`calloc(n)` works the same way (`calloc(n, sizeof(elem))`). If you write an
+allocation that already contains `sizeof` — or the two-argument
+`calloc(count, size)` form — it is left exactly as written, so the explicit C
+idiom keeps working.
+
+### 13.2 Automatic out-of-memory guard
+
+Every inferred `malloc`/`calloc` gets a NULL check inserted right after it, so a
+failed allocation aborts loudly instead of corrupting memory:
+
+```c
+int * arr = malloc((10) * sizeof(int));
+if (arr == NULL) exit((fprintf(stderr, "opc: out of memory: arr\n"), 1));
+```
+
+### 13.3 Leak lint
+
+When you transpile, OPC keeps a best-effort tally of owned resources —
+`malloc`/`calloc` buffers, `list[T]`, `map[K, V]`, and `file` handles — and
+warns on `stderr` about any that are never released and never returned:
+
+```
+prog.opc: warning: 'arr' is allocated (malloc) but never freed; release it with free(arr)
+```
+
+Returning a resource counts as transferring ownership, so it is not flagged.
+This is a single-pass textual lint, not a borrow checker — treat it as a hint.
+
+| Resource | Free with |
+|----------|-----------|
+| `malloc` / `calloc` | `free(x)` |
+| `list[T]` | `x.free()` |
+| `map[K, V]` | `x.free()` |
+| `file` | `file_close(x)` |
+
+---
+
+## 14. Passthrough / Raw C
 
 Any line that doesn't match a SimplC pattern passes through with auto-semicolons. This means you can freely mix raw C constructs:
 
@@ -1119,7 +1259,7 @@ int main() {
 
 ---
 
-## 14. Indentation & Block Rules
+## 15. Indentation & Block Rules
 
 SimplC uses **indentation** (like Python) to define blocks. The transpiler converts indentation to `{` / `}`.
 
@@ -1142,7 +1282,7 @@ fn foo() -> void:           // opens block
 
 ---
 
-## 15. Semicolons
+## 16. Semicolons
 
 Semicolons are **auto-inserted**. You never write them. The transpiler appends `;` to any line that:
 
@@ -1153,7 +1293,7 @@ Semicolons are **auto-inserted**. You never write them. The transpiler appends `
 
 ---
 
-## 16. Complete Example
+## 17. Complete Example
 
 A word frequency counter combining structs, dynamic arrays, and hash maps:
 
@@ -1227,7 +1367,7 @@ int main() {
 
 ---
 
-## 17. Building & Toolchain
+## 18. Building & Toolchain
 
 ```bash
 # Transpile
@@ -1253,7 +1393,7 @@ For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directo
 
 ---
 
-## 18. Syntax Summary
+## 19. Syntax Summary
 
 | Feature | SimplC | C |
 |---------|--------|---|
@@ -1269,6 +1409,9 @@ For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directo
 | for-each | `for x in xs:` | `for (int _opc_i_ = 0; ...) { T x = xs[_opc_i_]; ` |
 | switch | `switch expr:` | `switch (expr) {` |
 | struct | `struct Name:` | `typedef struct Name {` |
+| fn pointer | `op: fn(int, int) -> int` | `int (*op)(int, int);` |
+| malloc | `a: int* = malloc(10)` | `malloc((10) * sizeof(int));` + NULL guard |
+| calloc | `a: int* = calloc(10)` | `calloc(10, sizeof(int));` + NULL guard |
 | print | `print("hi")` | `printf("hi\n");` |
 | dyn array | `a: list[int] = []` | `int *a = NULL;` |
 | arr append | `a.append(x)` | `arrput(a, x);` |
@@ -1288,7 +1431,7 @@ For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directo
 | map default | `m.default(val)` | `shdefault/hmdefault` |
 | map free | `m.free()` | `shfree/hmfree` |
 | map iterate | `m[i].key` / `m[i].value` | direct array access |
-| read file | `f: OpcFile = read_file(path)` | `opc_read_file(path, "auto")` |
+| read file | `f: file = read_file(path)` | `opc_read_file(path, "auto")` + auto `if !ok` guard |
 | read (strategy) | `read_file(path, "mmap")` | `opc_read_file(path, "mmap")` |
 | close file | `file_close(f)` | `opc_file_close(f)` |
 | read lines | `read_lines(path)` | `opc_read_lines(path)` → `list[char*]` |

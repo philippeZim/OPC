@@ -44,14 +44,14 @@
 
   // builtin call signatures — used for the display label and a hint of intent.
   var SIGS = {
-    print: "(value)", printf: "(fmt, …)", scanf: "(fmt, …)", puts: "(s)",
+    print: "(fmt, …)", printf: "(fmt, …)", scanf: "(fmt, …)", puts: "(s)",
     putchar: "(c)", getchar: "()", gets: "(s)", fopen: "(path, mode)",
     fclose: "(fp)", fread: "(ptr, sz, n, fp)", fwrite: "(ptr, sz, n, fp)",
     fprintf: "(fp, fmt, …)", fscanf: "(fp, fmt, …)", fgets: "(s, n, fp)",
     fputs: "(s, fp)", fflush: "(fp)", fseek: "(fp, off, whence)", ftell: "(fp)",
     rewind: "(fp)", snprintf: "(s, n, fmt, …)", sprintf: "(s, fmt, …)",
     sscanf: "(s, fmt, …)", perror: "(s)",
-    malloc: "(size)", calloc: "(n, size)", realloc: "(ptr, size)", free: "(ptr)",
+    malloc: "(count)", calloc: "(count)", realloc: "(ptr, size)", free: "(ptr)",
     exit: "(code)", abort: "()", atexit: "(fn)", atoi: "(s)", atol: "(s)",
     atof: "(s)", strtol: "(s, end, base)", strtod: "(s, end)", rand: "()",
     srand: "(seed)", abs: "(x)", labs: "(x)", qsort: "(base, n, sz, cmp)",
@@ -100,6 +100,7 @@
   var TYPE_SNIPPETS = [
     ["list", "list[$|]", "dynamic array"],
     ["map", "map[$|, ]", "hash map"],
+    ["fn", "fn($|) -> ", "function pointer type"],
   ];
 
   // ── completion helpers ─────────────────────────────────────────────────────
