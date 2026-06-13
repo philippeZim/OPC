@@ -327,6 +327,16 @@ class SimplCTranspiler:
             pairs.append(kv)
         return pairs
 
+    def _io_guard(self, indent: str, name: str, kind: str) -> str:
+        """A one-line guard that aborts when a file read failed, so the user
+        never has to write `if !f.ok:` by hand. `kind` is 'file' (checks the
+        OpcFile.ok flag) or 'lines' (checks for a NULL list)."""
+        self.needed_includes.add('stdio')
+        self.needed_includes.add('stdlib')
+        cond = f'!{name}.ok' if kind == 'file' else f'{name} == NULL'
+        return (f'{indent}if ({cond}) '
+                f'exit((fprintf(stderr, "opc: failed to read file: {name}\\n"), 1))')
+
     # ── transform: map put  (name[key] = val) ────────────────────
 
     def try_map_put(self, s):
@@ -731,13 +741,17 @@ class SimplCTranspiler:
                 elems = self._parse_list_literal(val)
                 if elems is None:
                     # Not a literal — direct assignment (e.g. another array / call).
+                    # read_lines() returns NULL on failure: guard it automatically.
+                    guard = ([self._io_guard(indent, name, 'lines')]
+                             if val.startswith('opc_read_lines(') else [])
                     if cap is not None:
                         return (';\n'.join([
                             f'{indent}{elem_t}{star}{name} = NULL',
                             f'{indent}arrsetcap({name}, {cap})',
                             f'{indent}{name} = {val}',
-                        ]), False)
-                    return (f'{indent}{elem_t}{star}{name} = {val}', False)
+                        ] + guard), False)
+                    return (';\n'.join(
+                        [f'{indent}{elem_t}{star}{name} = {val}'] + guard), False)
                 stmts = [f'{indent}{elem_t}{star}{name} = NULL']
                 if cap is not None:
                     stmts.append(f'{indent}arrsetcap({name}, {cap})')
@@ -772,6 +786,13 @@ class SimplCTranspiler:
                 return (';\n'.join(stmts), False)
 
             ct = self.resolve_type(raw)
+            # A `file = read_file(...)` read fails silently in C; guard the
+            # OpcFile.ok flag automatically so the user never writes `if !f.ok:`.
+            if ct == 'OpcFile' and val.startswith('opc_read_file('):
+                return (';\n'.join([
+                    f'{indent}{ct} {name} = {val}',
+                    self._io_guard(indent, name, 'file'),
+                ]), False)
             arr = re.match(r'^(.+?)(\[.+\])$', ct)
             if arr: return (f'{indent}{arr.group(1)} {name}{arr.group(2)} = {val}', False)
             return (f'{indent}{ct} {name} = {val}', False)

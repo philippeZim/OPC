@@ -950,6 +950,31 @@ process(big.data, big.size)
 file_close(big)
 ```
 
+#### Automatic failure check
+
+You don't have to write the `if !f.ok:` guard at all — a `file = read_file(...)`
+declaration gets one inserted into the generated C automatically, so a failed
+read aborts loudly instead of leaving you with a half-initialised `OpcFile`:
+
+```python
+fn main() -> int:
+    f: file = read_file("data.txt")   // no manual check needed
+    printf("%s", f.data)
+    file_close(f)
+    return 0
+```
+
+```c
+OpcFile f = opc_read_file("data.txt", "auto");
+if (!f.ok) exit((fprintf(stderr, "opc: failed to read file: f\n"), 1));
+printf("%s", f.data);
+```
+
+The same guard is added for `read_lines` (checking for a `NULL` result). If you
+still want to recover from a failed read yourself, you can — the explicit
+`if !f.ok:` form from above keeps working; the auto-check simply means the
+common case needs no boilerplate.
+
 ### 12.3 Line-oriented text — `read_lines`
 
 `read_lines` returns a `list[char*]` of lines (the trailing newline is stripped), so all the usual `list` operations — `len()`, indexing, iteration — work directly. Release it with `free_lines` (which frees the strings **and** the list).
@@ -1250,7 +1275,7 @@ For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directo
 | map default | `m.default(val)` | `shdefault/hmdefault` |
 | map free | `m.free()` | `shfree/hmfree` |
 | map iterate | `m[i].key` / `m[i].value` | direct array access |
-| read file | `f: OpcFile = read_file(path)` | `opc_read_file(path, "auto")` |
+| read file | `f: file = read_file(path)` | `opc_read_file(path, "auto")` + auto `if !ok` guard |
 | read (strategy) | `read_file(path, "mmap")` | `opc_read_file(path, "mmap")` |
 | close file | `file_close(f)` | `opc_file_close(f)` |
 | read lines | `read_lines(path)` | `opc_read_lines(path)` → `list[char*]` |
