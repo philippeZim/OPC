@@ -301,6 +301,38 @@ class SimplCTranspiler:
             default_expr = pc[0].strip()
         return (key_t.strip(), val_t.strip(), default_expr)
 
+    def _parse_fn_type(self, raw: str):
+        """Parse a function-pointer type `fn(T1, T2, ...) -> R`.
+
+        Returns (ret_c_type, [arg_c_types]) or None. This is the SimplC
+        shorthand for C's awkward `R (*name)(T1, T2)` declarator syntax.
+        """
+        raw = raw.strip()
+        if not re.match(r'^fn\s*\(', raw):
+            return None
+        paren = raw.index('(')
+        pc = self._find_paren_content(raw, paren)
+        if pc is None:
+            return None
+        args_str, end = pc
+        after = raw[end:].strip()
+        am = re.match(r'^->\s*(.+)$', after)
+        if not am:
+            return None
+        ret_t = self.resolve_type(am.group(1).strip())
+        args_str = args_str.strip()
+        if args_str:
+            arg_types = [self.resolve_type(a.strip())
+                         for a in self._split_args(args_str)]
+        else:
+            arg_types = []
+        return (ret_t, arg_types)
+
+    def _fn_ptr_decl(self, ret_t: str, arg_types: list, name: str) -> str:
+        """Build a C function-pointer declarator `R (*name)(args)`."""
+        args = ', '.join(arg_types) if arg_types else 'void'
+        return f'{ret_t} (*{name})({args})'
+
     def _parse_list_literal(self, val: str):
         """Parse `[e1, e2, ...]`. Returns list of element exprs, or None if not a literal."""
         val = val.strip()
@@ -619,9 +651,18 @@ class SimplCTranspiler:
     # ── transform: function definition ────────────────────────────
 
     def try_function(self, s):
-        m = re.match(r'^(\s*)fn\s+(\w+)\s*\(([^)]*)\)\s*->\s*(\S+)\s*:\s*$', s)
+        # The parameter list may contain nested parens (e.g. a function-pointer
+        # parameter `f: fn(int, int) -> int`), so we balance-match it rather
+        # than use a naive `[^)]*` regex.
+        m = re.match(r'^(\s*)fn\s+(\w+)\s*\(', s)
         if not m: return None
-        indent, name, pr, ret = m.group(1), m.group(2), m.group(3).strip(), self.resolve_type(m.group(4))
+        indent, name = m.group(1), m.group(2)
+        pc = self._find_paren_content(s, m.end() - 1)
+        if pc is None: return None
+        pr, end = pc
+        rm = re.match(r'^->\s*(.+?)\s*:\s*$', s[end:].strip())
+        if not rm: return None
+        pr, ret = pr.strip(), self.resolve_type(rm.group(1).strip())
         cp = []
         if pr:
             for p in self._split_args(pr):
@@ -629,6 +670,10 @@ class SimplCTranspiler:
                 pm = re.match(r'^(\w+)\s*:\s*(.+)$', p)
                 if pm:
                     pn, raw_t = pm.group(1), pm.group(2).strip()
+                    fn_info = self._parse_fn_type(raw_t)
+                    if fn_info is not None:
+                        cp.append(self._fn_ptr_decl(fn_info[0], fn_info[1], pn))
+                        continue
                     pt = self.resolve_type(raw_t)
                     self._register_container_param(pn, raw_t)
                     arr = re.match(r'^(.+?)(\[.+\])$', pt)
@@ -731,6 +776,12 @@ class SimplCTranspiler:
             indent, name, raw, val = m.group(1), m.group(2), m.group(3).strip(), m.group(4).strip()
             if name in self.RESERVED: return None
 
+            fn_info = self._parse_fn_type(raw)
+            if fn_info is not None:
+                ret_t, arg_types = fn_info
+                decl = self._fn_ptr_decl(ret_t, arg_types, name)
+                return (f'{indent}{decl} = {val}', False)
+
             list_info = self._parse_list_type(raw)
             if list_info is not None:
                 inner_raw, cap = list_info
@@ -802,6 +853,11 @@ class SimplCTranspiler:
         if m:
             indent, name, raw = m.group(1), m.group(2), m.group(3).strip()
             if name in self.RESERVED: return None
+
+            fn_info = self._parse_fn_type(raw)
+            if fn_info is not None:
+                ret_t, arg_types = fn_info
+                return (f'{indent}{self._fn_ptr_decl(ret_t, arg_types, name)}', False)
 
             list_info = self._parse_list_type(raw)
             if list_info is not None:
@@ -877,6 +933,9 @@ class SimplCTranspiler:
         if not m: return None
         name, raw = m.group(1), m.group(2).strip()
         if name in self.RESERVED: return None
+        fn_info = self._parse_fn_type(raw)
+        if fn_info is not None:
+            return f'{indent}{self._fn_ptr_decl(fn_info[0], fn_info[1], name)};'
         ct = self.resolve_type(raw)
         arr = re.match(r'^(.+?)(\[.+\])$', ct)
         if arr: return f'{indent}{arr.group(1)} {name}{arr.group(2)};'

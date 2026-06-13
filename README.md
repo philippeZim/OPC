@@ -213,6 +213,63 @@ int fibonacci(int n) {
 }
 ```
 
+### 3.3 Function Pointers
+
+C's function-pointer declarator syntax (`int (*op)(int, int)`) is notoriously
+hard to read. SimplC replaces it with a `fn(argTypes) -> retType` type that
+mirrors the `fn` used for definitions:
+
+```python
+fn add(a: int, b: int) -> int:
+    return a + b
+
+fn apply(f: fn(int, int) -> int, x: int, y: int) -> int:
+    return f(x, y)
+
+fn main() -> int:
+    op: fn(int, int) -> int = add
+    printf("%d\n", apply(op, 3, 4))
+    return 0
+```
+
+Transpiles to:
+
+```c
+int add(int a, int b) {
+    return a + b;
+}
+int apply(int (*f)(int, int), int x, int y) {
+    return f(x, y);
+}
+int main() {
+    int (*op)(int, int) = add;
+    printf("%d\n", apply(op, 3, 4));
+    return 0;
+}
+```
+
+The `fn(...) -> ...` type works anywhere a type is expected: variable
+declarations, function parameters, and struct fields. A function name decays to
+a pointer on assignment, so no `&` is needed (`op = add`), and you call through
+the pointer directly (`op(2, 3)`). Use `fn() -> void` for a no-argument
+callback.
+
+```python
+struct Calc:
+    op: fn(int, int) -> int
+    name: char*
+```
+
+```c
+typedef struct Calc {
+    int (*op)(int, int);
+    char * name;
+} Calc;
+```
+
+> Returning a function pointer from a function (C's `int (*f(void))(int)`) is
+> not supported; wrap it in a `struct` or a typedef'd alias instead.
+
 ---
 
 ## 4. Control Flow
@@ -1257,6 +1314,7 @@ For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directo
 | for-range | `for i in range(n):` | `for (int i = 0; i < n; i++) {` |
 | switch | `switch expr:` | `switch (expr) {` |
 | struct | `struct Name:` | `typedef struct Name {` |
+| fn pointer | `op: fn(int, int) -> int` | `int (*op)(int, int);` |
 | print | `print("hi")` | `printf("hi\n");` |
 | dyn array | `a: list[int] = []` | `int *a = NULL;` |
 | arr append | `a.append(x)` | `arrput(a, x);` |
