@@ -156,6 +156,132 @@ def test_default_int_key_runs(run_simplc):
     assert_runs(run_simplc(DEFAULT_INT_SOURCE), "missing: -1.000000\n")
 
 
+# ── §7.4b default value set at declaration (new syntax) ──────────
+#
+# `m: map[K, V](default) = {}` is shorthand for declaring the map and then
+# calling `m.default(default)` right away. The transpiler emits the
+# shdefault/hmdefault call as part of the declaration.
+
+
+DEFAULT_DECL_STR_SOURCE = """\
+fn main() -> int:
+    config: map[char*, int](-1) = {}
+    config["width"] = 1920
+    missing: int = config["nonexistent"]
+    printf("missing=%d width=%d\\n", missing, config["width"])
+    config.free()
+    return 0
+"""
+
+
+def test_default_decl_string_key_transpile(transpile):
+    c = transpile(DEFAULT_DECL_STR_SOURCE)
+    assert_transpiles_to(c, [
+        '__map_charptr_int *config = NULL;',
+        'shdefault(config, -1);',
+        'int missing = shget(config, "nonexistent");',
+    ])
+
+
+def test_default_decl_string_key_runs(run_simplc):
+    assert_runs(run_simplc(DEFAULT_DECL_STR_SOURCE), "missing=-1 width=1920\n")
+
+
+DEFAULT_DECL_INT_SOURCE = """\
+fn main() -> int:
+    ages: map[int, double](-1.0) = {}
+    printf("missing: %f\\n", ages[9999])
+    ages.free()
+    return 0
+"""
+
+
+def test_default_decl_int_key_transpile(transpile):
+    c = transpile(DEFAULT_DECL_INT_SOURCE)
+    assert_transpiles_to(c, [
+        '__map_int_double *ages = NULL;',
+        'hmdefault(ages, -1.0);',
+        'hmget(ages, 9999)',
+    ])
+
+
+def test_default_decl_int_key_runs(run_simplc):
+    assert_runs(run_simplc(DEFAULT_DECL_INT_SOURCE), "missing: -1.000000\n")
+
+
+# Default + literal pairs: the default is applied first, then the entries.
+DEFAULT_DECL_WITH_PAIRS_SOURCE = """\
+fn main() -> int:
+    prices: map[char*, int](-1) = {"apple": 1, "pear": 2}
+    printf("apple=%d pear=%d missing=%d\\n", prices["apple"], prices["pear"], prices["plum"])
+    prices.free()
+    return 0
+"""
+
+
+def test_default_decl_with_pairs_transpile(transpile):
+    c = transpile(DEFAULT_DECL_WITH_PAIRS_SOURCE)
+    # Default line comes right after the NULL declaration, then each pair.
+    assert_transpiles_to(c, [
+        '__map_charptr_int *prices = NULL;',
+        'shdefault(prices, -1);',
+        'shput(prices, "apple", 1);',
+        'shput(prices, "pear", 2);',
+    ])
+
+
+def test_default_decl_with_pairs_runs(run_simplc):
+    assert_runs(run_simplc(DEFAULT_DECL_WITH_PAIRS_SOURCE),
+                "apple=1 pear=2 missing=-1\n")
+
+
+# No `= {}` initializer; the default is the only value-initialization step.
+DEFAULT_DECL_NOINIT_SOURCE = """\
+fn main() -> int:
+    config: map[char*, int](42)
+    config["a"] = 5
+    printf("a=%d missing=%d\\n", config["a"], config["nope"])
+    config.free()
+    return 0
+"""
+
+
+def test_default_decl_noinit_transpile(transpile):
+    c = transpile(DEFAULT_DECL_NOINIT_SOURCE)
+    assert_transpiles_to(c, [
+        '__map_charptr_int *config = NULL;',
+        'shdefault(config, 42);',
+        'shput(config, "a", 5);',
+    ])
+
+
+def test_default_decl_noinit_runs(run_simplc):
+    assert_runs(run_simplc(DEFAULT_DECL_NOINIT_SOURCE), "a=5 missing=42\n")
+
+
+# Default can be any expression: a function call, a variable, arithmetic.
+DEFAULT_DECL_EXPR_SOURCE = """\
+fn main() -> int:
+    base: int = 100
+    m: map[char*, int](base - 1) = {"a": 1}
+    printf("a=%d missing=%d\\n", m["a"], m["nope"])
+    m.free()
+    return 0
+"""
+
+
+def test_default_decl_expr_transpile(transpile):
+    c = transpile(DEFAULT_DECL_EXPR_SOURCE)
+    assert_transpiles_to(c, [
+        'shdefault(m, base - 1);',
+        'shput(m, "a", 1);',
+    ])
+
+
+def test_default_decl_expr_runs(run_simplc):
+    assert_runs(run_simplc(DEFAULT_DECL_EXPR_SOURCE), "a=1 missing=99\n")
+
+
 # ── §7.5 iteration ─────────────────────────────────────────────────
 
 

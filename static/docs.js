@@ -130,12 +130,13 @@ const DOCS = [
       { h: "Length & existence" },
       { opc: 'printf("count: %d\\n", len(scores))\n\nif "alice" in scores:\n    printf("found\\n")\n\nif "dave" not in scores:\n    printf("missing\\n")' },
       { h: "Defaults & iteration" },
-      { opc: 'config: map[char*, int] = {}\nconfig.default(0)\nmissing: int = config["nope"]   // returns 0\n\nfor i in range(len(scores)):\n    printf("%s -> %d\\n", scores[i].key, scores[i].value)' },
+      { opc: '// Default set at declaration time (shorthand for .default())\nconfig: map[char*, int](-1) = {}\nmissing: int = config["nope"]   // returns -1\n\n// Or set the default after declaration\nconfig: map[char*, int] = {}\nconfig.default(0)\n\nfor i in range(len(scores)):\n    printf("%s -> %d\n", scores[i].key, scores[i].value)' },
       { h: "Quick reference" },
       { table: {
         head: ["SimplC", "Meaning"],
         rows: [
           ["m: map[K, V] = {}", "Declare a map"],
+          ["m: map[K, V](default) = {}", "Declare a map with a default for missing keys"],
           ["m[key] = val", "Insert / update"],
           ["m[key]", "Get value"],
           ["del m[key]", "Delete entry"],

@@ -647,6 +647,27 @@ if (shgeti(scores, "dave") < 0) {
 
 ### 7.4 Default Values
 
+A map can return a fixed value for any key that's missing — useful for
+counters, sparse arrays, and "have we seen this?" flags. There are two
+ways to set the default.
+
+**At declaration time** — pass the default inside `()` right after the
+type:
+
+```python
+config: map[char*, int](-1) = {}
+config["width"] = 1920
+
+missing: int = config["nonexistent"]   // returns -1
+```
+
+This is shorthand for declaring the map and then immediately calling
+`m.default(...)`. The same form works without an initializer
+(`config: map[char*, int](-1)`) and with a literal of pairs
+(`prices: map[char*, int](-1) = {"apple": 1, "pear": 2}`).
+
+**After declaration** — call `m.default(val)` at any point:
+
 ```python
 config: map[char*, int] = {}
 config.default(0)
@@ -658,8 +679,7 @@ missing: int = config["nonexistent"]   // returns 0
 Works the same for integer-keyed maps:
 
 ```python
-ages: map[int, double] = {}
-ages.default(-1.0)
+ages: map[int, double](-1.0) = {}
 printf("missing: %f\n", ages[9999])   // prints -1.0
 ```
 
@@ -702,6 +722,7 @@ fn lookup(db: map[char*, int], key: char*) -> int:
 |--------|-------------|
 | `m: map[K, V] = {}` | Declare a map |
 | `m: map[K, V] = {k1: v1, ...}` | Declare and initialize with pairs |
+| `m: map[K, V](default) = {}` | Declare a map with a default for missing keys |
 | `m[key] = val` | Insert / update |
 | `m[key]` | Get value |
 | `del m[key]` | Delete entry |
@@ -1219,6 +1240,7 @@ For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directo
 | arr length | `len(a)` | `arrlen(a)` |
 | arr free | `a.free()` | `arrfree(a);` |
 | map decl | `m: map[K, V] = {}` | typedef + pointer |
+| map decl + default | `m: map[K, V](val) = {}` | typedef + pointer + `shdefault/hmdefault` |
 | map put | `m[key] = val` | `shput/hmput` |
 | map get | `m[key]` | `shget/hmget` |
 | map del | `del m[key]` | `shdel/hmdel` |
