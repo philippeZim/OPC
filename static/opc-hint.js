@@ -51,7 +51,7 @@
     fputs: "(s, fp)", fflush: "(fp)", fseek: "(fp, off, whence)", ftell: "(fp)",
     rewind: "(fp)", snprintf: "(s, n, fmt, …)", sprintf: "(s, fmt, …)",
     sscanf: "(s, fmt, …)", perror: "(s)",
-    malloc: "(size)", calloc: "(n, size)", realloc: "(ptr, size)", free: "(ptr)",
+    malloc: "(count)", calloc: "(count)", realloc: "(ptr, size)", free: "(ptr)",
     exit: "(code)", abort: "()", atexit: "(fn)", atoi: "(s)", atol: "(s)",
     atof: "(s)", strtol: "(s, end, base)", strtod: "(s, end)", rand: "()",
     srand: "(seed)", abs: "(x)", labs: "(x)", qsort: "(base, n, sz, cmp)",
