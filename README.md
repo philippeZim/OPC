@@ -213,6 +213,63 @@ int fibonacci(int n) {
 }
 ```
 
+### 3.3 Function Pointers
+
+C's function-pointer declarator syntax (`int (*op)(int, int)`) is notoriously
+hard to read. SimplC replaces it with a `fn(argTypes) -> retType` type that
+mirrors the `fn` used for definitions:
+
+```python
+fn add(a: int, b: int) -> int:
+    return a + b
+
+fn apply(f: fn(int, int) -> int, x: int, y: int) -> int:
+    return f(x, y)
+
+fn main() -> int:
+    op: fn(int, int) -> int = add
+    printf("%d\n", apply(op, 3, 4))
+    return 0
+```
+
+Transpiles to:
+
+```c
+int add(int a, int b) {
+    return a + b;
+}
+int apply(int (*f)(int, int), int x, int y) {
+    return f(x, y);
+}
+int main() {
+    int (*op)(int, int) = add;
+    printf("%d\n", apply(op, 3, 4));
+    return 0;
+}
+```
+
+The `fn(...) -> ...` type works anywhere a type is expected: variable
+declarations, function parameters, and struct fields. A function name decays to
+a pointer on assignment, so no `&` is needed (`op = add`), and you call through
+the pointer directly (`op(2, 3)`). Use `fn() -> void` for a no-argument
+callback.
+
+```python
+struct Calc:
+    op: fn(int, int) -> int
+    name: char*
+```
+
+```c
+typedef struct Calc {
+    int (*op)(int, int);
+    char * name;
+} Calc;
+```
+
+> Returning a function pointer from a function (C's `int (*f(void))(int)`) is
+> not supported; wrap it in a `struct` or a typedef'd alias instead.
+
 ---
 
 ## 4. Control Flow
@@ -785,31 +842,32 @@ Both C comment styles pass through unchanged:
 
 ## 10. `print()` Shorthand
 
-`print("string")` with a single string literal appends `\n` automatically:
+`print(...)` maps to `printf` and appends `\n` to the format string for you —
+both for a bare string and for the formatted form:
 
 ```python
 print("Hello!")
+print("%d %d", x, y)
 ```
 
 Transpiles to:
 
 ```c
 printf("Hello!\n");
-```
-
-With format arguments, it passes through to `printf` without adding `\n`:
-
-```python
-print("%d %d\n", x, y)
-```
-
-Transpiles to:
-
-```c
 printf("%d %d\n", x, y);
 ```
 
-Standard `printf` always works too — `print` is just shorthand.
+If the format string already ends with `\n`, none is added — so you never get a
+double newline:
+
+```python
+print("%d\n", x)        // → printf("%d\n", x);  (unchanged)
+```
+
+The newline is only appended when the first argument is a string literal. If you
+pass a runtime string (`print(msg)`), it is forwarded unchanged — add your own
+`\n`, or use `printf` directly. Standard `printf` always works too — `print` is
+just shorthand.
 
 ---
 
@@ -949,6 +1007,31 @@ big: OpcFile = read_file("huge.bin", "mmap")   // zero-copy, random access
 process(big.data, big.size)
 file_close(big)
 ```
+
+#### Automatic failure check
+
+You don't have to write the `if !f.ok:` guard at all — a `file = read_file(...)`
+declaration gets one inserted into the generated C automatically, so a failed
+read aborts loudly instead of leaving you with a half-initialised `OpcFile`:
+
+```python
+fn main() -> int:
+    f: file = read_file("data.txt")   // no manual check needed
+    printf("%s", f.data)
+    file_close(f)
+    return 0
+```
+
+```c
+OpcFile f = opc_read_file("data.txt", "auto");
+if (!f.ok) exit((fprintf(stderr, "opc: failed to read file: f\n"), 1));
+printf("%s", f.data);
+```
+
+The same guard is added for `read_lines` (checking for a `NULL` result). If you
+still want to recover from a failed read yourself, you can — the explicit
+`if !f.ok:` form from above keeps working; the auto-check simply means the
+common case needs no boilerplate.
 
 ### 12.3 Line-oriented text — `read_lines`
 
@@ -1288,6 +1371,7 @@ For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directo
 | for-range | `for i in range(n):` | `for (int i = 0; i < n; i++) {` |
 | switch | `switch expr:` | `switch (expr) {` |
 | struct | `struct Name:` | `typedef struct Name {` |
+| fn pointer | `op: fn(int, int) -> int` | `int (*op)(int, int);` |
 | malloc | `a: int* = malloc(10)` | `malloc((10) * sizeof(int));` + NULL guard |
 | calloc | `a: int* = calloc(10)` | `calloc(10, sizeof(int));` + NULL guard |
 | print | `print("hi")` | `printf("hi\n");` |
@@ -1309,7 +1393,7 @@ For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directo
 | map default | `m.default(val)` | `shdefault/hmdefault` |
 | map free | `m.free()` | `shfree/hmfree` |
 | map iterate | `m[i].key` / `m[i].value` | direct array access |
-| read file | `f: OpcFile = read_file(path)` | `opc_read_file(path, "auto")` |
+| read file | `f: file = read_file(path)` | `opc_read_file(path, "auto")` + auto `if !ok` guard |
 | read (strategy) | `read_file(path, "mmap")` | `opc_read_file(path, "mmap")` |
 | close file | `file_close(f)` | `opc_file_close(f)` |
 | read lines | `read_lines(path)` | `opc_read_lines(path)` → `list[char*]` |

@@ -44,7 +44,7 @@
 
   // builtin call signatures — used for the display label and a hint of intent.
   var SIGS = {
-    print: "(value)", printf: "(fmt, …)", scanf: "(fmt, …)", puts: "(s)",
+    print: "(fmt, …)", printf: "(fmt, …)", scanf: "(fmt, …)", puts: "(s)",
     putchar: "(c)", getchar: "()", gets: "(s)", fopen: "(path, mode)",
     fclose: "(fp)", fread: "(ptr, sz, n, fp)", fwrite: "(ptr, sz, n, fp)",
     fprintf: "(fp, fmt, …)", fscanf: "(fp, fmt, …)", fgets: "(s, n, fp)",
@@ -100,6 +100,7 @@
   var TYPE_SNIPPETS = [
     ["list", "list[$|]", "dynamic array"],
     ["map", "map[$|, ]", "hash map"],
+    ["fn", "fn($|) -> ", "function pointer type"],
   ];
 
   // ── completion helpers ─────────────────────────────────────────────────────
