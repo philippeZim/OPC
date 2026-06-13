@@ -85,7 +85,7 @@
     ["main", "fn main() -> i32:\n    $|", "program entry point"],
     ["for", "for $| in range():", "range loop"],
     ["fore", "for $| in range(0, , 1):", "range loop (start, stop, step)"],
-    ["forl", "for $| in :", "iterate over a list (for elem in list:)"],
+    ["forl", "for $| in :", "iterate a list / array (for elem in xs:)"],
     ["if", "if $|:", "if statement"],
     ["elif", "elif $|:", "else-if branch"],
     ["else", "else:\n    $|", "else branch"],

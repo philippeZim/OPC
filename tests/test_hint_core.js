@@ -264,6 +264,20 @@ test("resolveChainType: dead-end link returns null", () => {
   assert.equal(hint.resolveChainType("s.nope", syms), null);
 });
 
+test("buildList: a fixed-size array var is offered as an iterable in expr position", () => {
+  // Powers `for x in <arr>:` completion for fixed arrays (T[N]).
+  const src = [
+    "fn main() -> int:",
+    "    nums: int[3] = {1, 2, 3}",
+    "    for x in ",
+  ].join("\n");
+  const syms = hint.parseSymbols(src);
+  assert.equal(syms.vars.nums, 1);
+  const ctx = hint.detectContext("    for x in ", syms);
+  assert.equal(ctx.kind, "expr");
+  assert.ok(texts(hint.buildList(ctx, syms)).includes("nums"));
+});
+
 // ── buildList ───────────────────────────────────────────────────────────────
 test("buildList: struct field entries carry the field name", () => {
   const src = [
