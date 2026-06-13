@@ -1093,7 +1093,64 @@ With `OPC_USE_URING` defined, `read_files` submits all reads through io_uring; w
 
 ---
 
-## 13. Passthrough / Raw C
+## 13. Memory Allocation — `malloc`
+
+C makes you spell out `sizeof` on every allocation and null-check the result
+by hand. SimplC removes both chores.
+
+### 13.1 Element-size inference
+
+`malloc(n)` allocates room for **n elements of the declared pointer's type** —
+the transpiler multiplies by `sizeof(elem)` for you:
+
+```python
+arr: int* = malloc(10)        // room for 10 ints
+buf: char** = malloc(3)       // room for 3 char*
+```
+
+```c
+int * arr = malloc((10) * sizeof(int));
+char ** buf = malloc((3) * sizeof(char *));
+```
+
+`calloc(n)` works the same way (`calloc(n, sizeof(elem))`). If you write an
+allocation that already contains `sizeof` — or the two-argument
+`calloc(count, size)` form — it is left exactly as written, so the explicit C
+idiom keeps working.
+
+### 13.2 Automatic out-of-memory guard
+
+Every inferred `malloc`/`calloc` gets a NULL check inserted right after it, so a
+failed allocation aborts loudly instead of corrupting memory:
+
+```c
+int * arr = malloc((10) * sizeof(int));
+if (arr == NULL) exit((fprintf(stderr, "opc: out of memory: arr\n"), 1));
+```
+
+### 13.3 Leak lint
+
+When you transpile, OPC keeps a best-effort tally of owned resources —
+`malloc`/`calloc` buffers, `list[T]`, `map[K, V]`, and `file` handles — and
+warns on `stderr` about any that are never released and never returned:
+
+```
+prog.opc: warning: 'arr' is allocated (malloc) but never freed; release it with free(arr)
+```
+
+Returning a resource counts as transferring ownership, so it is not flagged.
+This is a single-pass textual lint, not a borrow checker — treat it as a hint.
+
+| Resource | Free with |
+|----------|-----------|
+| `malloc` / `calloc` | `free(x)` |
+| `list[T]` | `x.free()` |
+| `map[K, V]` | `x.free()` |
+| `file` | `file_close(x)` |
+
+---
+
+## 14. Passthrough / Raw C
 
 Any line that doesn't match a SimplC pattern passes through with auto-semicolons. This means you can freely mix raw C constructs:
 
@@ -1165,7 +1222,7 @@ int main() {
 
 ---
 
-## 14. Indentation & Block Rules
+## 15. Indentation & Block Rules
 
 SimplC uses **indentation** (like Python) to define blocks. The transpiler converts indentation to `{` / `}`.
 
@@ -1188,7 +1245,7 @@ fn foo() -> void:           // opens block
 
 ---
 
-## 15. Semicolons
+## 16. Semicolons
 
 Semicolons are **auto-inserted**. You never write them. The transpiler appends `;` to any line that:
 
@@ -1199,7 +1256,7 @@ Semicolons are **auto-inserted**. You never write them. The transpiler appends `
 
 ---
 
-## 16. Complete Example
+## 17. Complete Example
 
 A word frequency counter combining structs, dynamic arrays, and hash maps:
 
@@ -1273,7 +1330,7 @@ int main() {
 
 ---
 
-## 17. Building & Toolchain
+## 18. Building & Toolchain
 
 ```bash
 # Transpile
@@ -1299,7 +1356,7 @@ For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directo
 
 ---
 
-## 18. Syntax Summary
+## 19. Syntax Summary
 
 | Feature | SimplC | C |
 |---------|--------|---|
@@ -1315,6 +1372,8 @@ For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directo
 | switch | `switch expr:` | `switch (expr) {` |
 | struct | `struct Name:` | `typedef struct Name {` |
 | fn pointer | `op: fn(int, int) -> int` | `int (*op)(int, int);` |
+| malloc | `a: int* = malloc(10)` | `malloc((10) * sizeof(int));` + NULL guard |
+| calloc | `a: int* = calloc(10)` | `calloc(10, sizeof(int));` + NULL guard |
 | print | `print("hi")` | `printf("hi\n");` |
 | dyn array | `a: list[int] = []` | `int *a = NULL;` |
 | arr append | `a.append(x)` | `arrput(a, x);` |

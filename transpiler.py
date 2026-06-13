@@ -75,6 +75,7 @@ class SimplCTranspiler:
         self.prototypes = []
         self.struct_definitions = []
         self.current_struct_lines = []
+        self.leak_warnings = []
 
     # ── type helpers ──────────────────────────────────────────────
 
@@ -300,6 +301,37 @@ class SimplCTranspiler:
                 return None
             default_expr = pc[0].strip()
         return (key_t.strip(), val_t.strip(), default_expr)
+
+    def _alloc_sizeof(self, ct: str, val: str):
+        """Infer the element size for `malloc`/`calloc` from the declared type.
+
+        `arr: int* = malloc(10)` should allocate room for 10 ints, not 10
+        bytes, so we multiply by `sizeof(elem)`. A call that already mentions
+        `sizeof` is left untouched (the user opted into the explicit form).
+        Returns the rewritten allocation string, or None when nothing applies.
+        """
+        if not ct.endswith('*'):
+            return None
+        elem = ct[:-1].strip()
+        m = re.match(r'^(malloc|calloc)\s*\(\s*(.+)\)\s*$', val.strip())
+        if not m:
+            return None
+        fn, arg = m.group(1), m.group(2).strip()
+        if 'sizeof' in arg:
+            return None
+        if len(self._split_top_level(arg)) != 1:
+            return None  # already (n, size) form — leave it alone
+        if fn == 'malloc':
+            return f'malloc(({arg}) * sizeof({elem}))'
+        return f'calloc({arg}, sizeof({elem}))'
+
+    def _oom_guard(self, indent: str, name: str) -> str:
+        """A one-line `if (name == NULL) exit(...)` that aborts on a failed
+        allocation, so the user never has to null-check malloc themselves."""
+        self.needed_includes.add('stdio')
+        self.needed_includes.add('stdlib')
+        return (f'{indent}if ({name} == NULL) '
+                f'exit((fprintf(stderr, "opc: out of memory: {name}\\n"), 1))')
 
     def _parse_fn_type(self, raw: str):
         """Parse a function-pointer type `fn(T1, T2, ...) -> R`.
@@ -837,6 +869,12 @@ class SimplCTranspiler:
                 return (';\n'.join(stmts), False)
 
             ct = self.resolve_type(raw)
+            alloc = self._alloc_sizeof(ct, val)
+            if alloc is not None:
+                return (';\n'.join([
+                    f'{indent}{ct} {name} = {alloc}',
+                    self._oom_guard(indent, name),
+                ]), False)
             # A `file = read_file(...)` read fails silently in C; guard the
             # OpcFile.ok flag automatically so the user never writes `if !f.ok:`.
             if ct == 'OpcFile' and val.startswith('opc_read_file('):
@@ -949,6 +987,67 @@ class SimplCTranspiler:
         for m in re.finditer(r'^[ \t]*fn\s+(\w+)\s*\(', source, re.MULTILINE):
             self.user_funcs.add(m.group(1))
 
+    # ── leak tracker ──────────────────────────────────────────────
+    #
+    # A best-effort, transpile-time lint: it flags owned resources
+    # (malloc/calloc, list[T], map[K,V], file) that are never released and
+    # never returned (returning transfers ownership). It is intentionally
+    # conservative about reporting but, being a single-pass textual scan, it
+    # cannot reason across scopes — treat its output as a hint, not a proof.
+
+    _FREE_PATTERNS = (
+        r'\bfree\s*\(\s*(\w+)',
+        r'\b(\w+)\s*\.\s*free\s*\(',
+        r'\bfile_close\s*\(\s*(\w+)',
+        r'\bfree_lines\s*\(\s*(\w+)',
+        r'\b(?:arrfree|shfree|hmfree)\s*\(\s*(\w+)',
+    )
+
+    def _free_hint(self, kind: str, name: str) -> str:
+        return {
+            'malloc': f'free({name})',
+            'list': f'{name}.free()',
+            'map': f'{name}.free()',
+            'file': f'file_close({name})',
+        }.get(kind, f'free({name})')
+
+    def _scan_leaks(self, source: str) -> None:
+        allocated = {}   # name -> kind, in source order
+        freed = set()
+        escaped = set()
+        for raw_line in source.splitlines():
+            line = raw_line.strip()
+            if (not line or line.startswith('//') or line.startswith('/*')
+                    or line.startswith('*') or line.startswith('#')):
+                continue
+            for pat in self._FREE_PATTERNS:
+                for m in re.finditer(pat, line):
+                    freed.add(m.group(1))
+            rm = re.match(r'^return\b(.*)$', line)
+            if rm:
+                escaped.update(re.findall(r'\b(\w+)\b', rm.group(1)))
+            dm = re.match(r'^\s*(\w+)\s*:\s*([^=]+?)\s*=\s*(.+)$', raw_line)
+            if not dm:
+                continue
+            name, raw_t, val = dm.group(1), dm.group(2).strip(), dm.group(3).strip()
+            if name in self.RESERVED:
+                continue
+            if re.match(r'^(malloc|calloc|realloc)\s*\(', val):
+                allocated[name] = 'malloc'
+            elif raw_t.startswith('list['):
+                allocated[name] = 'list'
+            elif raw_t.startswith('map['):
+                allocated[name] = 'map'
+            elif raw_t == 'file' and re.match(r'^read_files?\s*\(', val):
+                allocated[name] = 'file'
+        for name, kind in allocated.items():
+            if name in freed or name in escaped:
+                continue
+            self.leak_warnings.append(
+                f"warning: '{name}' is allocated ({kind}) but never freed; "
+                f"release it with {self._free_hint(kind, name)}"
+            )
+
     # ── main transpile ────────────────────────────────────────────
 
     def transpile(self, source: str) -> str:
@@ -962,9 +1061,11 @@ class SimplCTranspiler:
         self.prototypes = []
         self.struct_definitions = []
         self.current_struct_lines = []
+        self.leak_warnings = []
         self._pre_scan_structs(source)
         self._pre_scan_functions(source)
         self.detect_auto_includes(source)
+        self._scan_leaks(source)
 
         transforms = [
             self.try_import,
@@ -1239,6 +1340,10 @@ def main():
     with open(outf, 'w') as f:
         f.write(c_code)
     print(f"Transpiled {inf} -> {outf}")
+
+    # Best-effort leak lint: surface owned resources that look unreleased.
+    for warning in t.leak_warnings:
+        print(f"{inf}: {warning}", file=sys.stderr)
 
     # Bundled headers (stb_ds.h for list/map, opc_io.h for file reading) are
     # shipped next to the output automatically so the user never copies them by
