@@ -305,7 +305,44 @@ for (int i = 10; i > 0; i--) {
 }
 ```
 
-### 4.4 Plain for (C-style)
+### 4.4 for-each (`for x in xs:`)
+
+Iterate the elements of a collection directly — no index bookkeeping. It works
+for dynamic `list[T]` (§6), fixed-size arrays `T[N]`, and plain pointers that
+are assigned a known fixed array:
+
+```python
+nums: int[3] = {1, 2, 3}
+for x in nums:
+    printf("%d\n", x)
+
+p: int* = nums          // pointer that aliases a known array
+for y in p:
+    printf("%d\n", y)
+```
+
+Transpiles to:
+
+```c
+int nums[3] = {1, 2, 3};
+for (int _opc_i_ = 0; _opc_i_ < 3; _opc_i_++) {
+    int x = nums[_opc_i_];
+    printf("%d\n", x);
+}
+
+int * p = nums;
+for (int _opc_i_ = 0; _opc_i_ < 3; _opc_i_++) {
+    int y = p[_opc_i_];
+    printf("%d\n", y);
+}
+```
+
+A dynamic `list[T]` uses its runtime `arrlen`; a fixed array uses its
+compile-time length. Because a bare pointer carries no length of its own, the
+shorthand only applies to a pointer once it has been assigned a fixed array
+whose size the transpiler has already seen.
+
+### 4.5 Plain for (C-style)
 
 If you need a non-range for loop, write the three parts after `for`, separated by semicolons:
 
@@ -322,7 +359,7 @@ for (int i = 0; i < 5; i++) {
 }
 ```
 
-### 4.5 switch
+### 4.6 switch
 
 ```python
 day: int = 3
@@ -345,7 +382,7 @@ switch (day) {
 }
 ```
 
-### 4.6 Nested Blocks
+### 4.7 Nested Blocks
 
 Indentation nesting works to any depth:
 
@@ -1229,6 +1266,7 @@ For programs using `list[T]` or `map[K,V]`, place `stb_ds.h` in the same directo
 | else | `else:` | `} else {` |
 | while | `while cond:` | `while (cond) {` |
 | for-range | `for i in range(n):` | `for (int i = 0; i < n; i++) {` |
+| for-each | `for x in xs:` | `for (int _opc_i_ = 0; ...) { T x = xs[_opc_i_]; ` |
 | switch | `switch expr:` | `switch (expr) {` |
 | struct | `struct Name:` | `typedef struct Name {` |
 | print | `print("hi")` | `printf("hi\n");` |

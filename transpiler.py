@@ -71,6 +71,7 @@ class SimplCTranspiler:
         self.struct_names = set()
         self.map_decls = {}        # var_name -> (key_type, val_type, struct_name, is_string_key)
         self.arr_decls = {}        # var_name -> element C type
+        self.fixed_arr_decls = {}  # var_name -> (element C type, size expr)
         self.generated_map_structs = {}  # struct_name -> typedef line
         self.prototypes = []
         self.struct_definitions = []
@@ -300,6 +301,18 @@ class SimplCTranspiler:
                 return None
             default_expr = pc[0].strip()
         return (key_t.strip(), val_t.strip(), default_expr)
+
+    def _parse_fixed_array(self, raw: str):
+        """Parse a fixed-size array type `T[N]`. Returns (elem_raw, size_expr)
+        for a single-dimension array, or None (multi-dimensional arrays are not
+        supported by the `for x in arr:` shorthand)."""
+        m = re.match(r'^(.+?)\s*\[([^\[\]]+)\]$', raw.strip())
+        if not m:
+            return None
+        elem_raw = m.group(1).strip()
+        if '[' in elem_raw or ']' in elem_raw:
+            return None
+        return (elem_raw, m.group(2).strip())
 
     def _parse_list_literal(self, val: str):
         """Parse `[e1, e2, ...]`. Returns list of element exprs, or None if not a literal."""
@@ -679,14 +692,18 @@ class SimplCTranspiler:
         m = re.match(r'^(\s*)for\s+(\w+)\s+in\s+(\w+)\s*:\s*$', s)
         if not m: return None
         indent, var, list_var = m.group(1), m.group(2), m.group(3)
-        if list_var not in self.arr_decls: return None
-        elem_t = self.arr_decls[list_var]
-        inner_indent = indent + '    '
-        if elem_t.endswith('*'):
-            elem_decl = f'{inner_indent}{elem_t}{var} = {list_var}[_opc_i_];'
+        # A dynamic list[T] knows its length at runtime (arrlen); a fixed-size
+        # array (or a pointer that aliases one) has a compile-time count.
+        if list_var in self.arr_decls:
+            elem_t, count = self.arr_decls[list_var], f'arrlen({list_var})'
+        elif list_var in self.fixed_arr_decls:
+            elem_t, count = self.fixed_arr_decls[list_var]
         else:
-            elem_decl = f'{inner_indent}{elem_t} {var} = {list_var}[_opc_i_];'
-        return (f'{indent}for (int _opc_i_ = 0; _opc_i_ < arrlen({list_var}); _opc_i_++)', [elem_decl])
+            return None
+        inner_indent = indent + '    '
+        sep = '' if elem_t.endswith('*') else ' '
+        elem_decl = f'{inner_indent}{elem_t}{sep}{var} = {list_var}[_opc_i_];'
+        return (f'{indent}for (int _opc_i_ = 0; _opc_i_ < {count}; _opc_i_++)', [elem_decl])
 
     # ── transform: else-if / else ─────────────────────────────────
 
@@ -772,6 +789,13 @@ class SimplCTranspiler:
                 return (';\n'.join(stmts), False)
 
             ct = self.resolve_type(raw)
+            # Track fixed-size arrays (and pointers that alias one) so the
+            # `for x in arr:` shorthand knows their length.
+            fa = self._parse_fixed_array(raw)
+            if fa is not None:
+                self.fixed_arr_decls[name] = (self.resolve_type(fa[0]), fa[1])
+            elif ct.endswith('*') and val.strip() in self.fixed_arr_decls:
+                self.fixed_arr_decls[name] = self.fixed_arr_decls[val.strip()]
             arr = re.match(r'^(.+?)(\[.+\])$', ct)
             if arr: return (f'{indent}{arr.group(1)} {name}{arr.group(2)} = {val}', False)
             return (f'{indent}{ct} {name} = {val}', False)
@@ -815,6 +839,9 @@ class SimplCTranspiler:
                 return (';\n'.join(stmts), False)
 
             ct = self.resolve_type(raw)
+            fa = self._parse_fixed_array(raw)
+            if fa is not None:
+                self.fixed_arr_decls[name] = (self.resolve_type(fa[0]), fa[1])
             arr = re.match(r'^(.+?)(\[.+\])$', ct)
             if arr: return (f'{indent}{arr.group(1)} {name}{arr.group(2)}', False)
             return (f'{indent}{ct} {name}', False)
@@ -870,6 +897,7 @@ class SimplCTranspiler:
         self.struct_names = set()
         self.map_decls = {}
         self.arr_decls = {}
+        self.fixed_arr_decls = {}
         self.generated_map_structs = {}
         self.prototypes = []
         self.struct_definitions = []
