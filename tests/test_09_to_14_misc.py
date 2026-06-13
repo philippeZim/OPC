@@ -81,6 +81,31 @@ def test_print_formatted_runs(run_simplc):
     assert_runs(run_simplc(PRINT_FORMATTED_SOURCE), "3 4\n")
 
 
+# A formatted print() WITHOUT a trailing \n still gets one appended (issue #28).
+PRINT_FORMATTED_NO_NL_SOURCE = """\
+fn main() -> int:
+    x: int = 3
+    y: int = 4
+    print("%d %d", x, y)
+    return 0
+"""
+
+
+def test_print_formatted_auto_newline_transpile(transpile):
+    c = transpile(PRINT_FORMATTED_NO_NL_SOURCE)
+    assert_transpiles_to(c, ['printf("%d %d\\n", x, y);'])
+
+
+def test_print_formatted_auto_newline_runs(run_simplc):
+    assert_runs(run_simplc(PRINT_FORMATTED_NO_NL_SOURCE), "3 4\n")
+
+
+def test_print_string_with_comma_stays_one_arg(transpile):
+    # The format string may itself contain a comma; it must not be split.
+    c = transpile('fn main() -> int:\n    print("a, b: %d", 7)\n    return 0\n')
+    assert_transpiles_to(c, ['printf("a, b: %d\\n", 7);'])
+
+
 # ── §11 auto-includes ──────────────────────────────────────────────
 
 

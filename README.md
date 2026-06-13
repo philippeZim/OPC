@@ -785,31 +785,32 @@ Both C comment styles pass through unchanged:
 
 ## 10. `print()` Shorthand
 
-`print("string")` with a single string literal appends `\n` automatically:
+`print(...)` maps to `printf` and appends `\n` to the format string for you —
+both for a bare string and for the formatted form:
 
 ```python
 print("Hello!")
+print("%d %d", x, y)
 ```
 
 Transpiles to:
 
 ```c
 printf("Hello!\n");
-```
-
-With format arguments, it passes through to `printf` without adding `\n`:
-
-```python
-print("%d %d\n", x, y)
-```
-
-Transpiles to:
-
-```c
 printf("%d %d\n", x, y);
 ```
 
-Standard `printf` always works too — `print` is just shorthand.
+If the format string already ends with `\n`, none is added — so you never get a
+double newline:
+
+```python
+print("%d\n", x)        // → printf("%d\n", x);  (unchanged)
+```
+
+The newline is only appended when the first argument is a string literal. If you
+pass a runtime string (`print(msg)`), it is forwarded unchanged — add your own
+`\n`, or use `printf` directly. Standard `printf` always works too — `print` is
+just shorthand.
 
 ---
 
