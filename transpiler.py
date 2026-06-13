@@ -848,9 +848,17 @@ class SimplCTranspiler:
         m = re.match(r'^(\s*)print\((.+)\)\s*$', s)
         if not m: return None
         indent, args = m.group(1), m.group(2)
-        if re.match(r'^".*"$', args.strip()):
-            inner = args.strip()[1:-1]
-            return (f'{indent}printf("{inner}\\n")', False)
+        # Auto-append "\n" to the format string of every print() — including the
+        # formatted form `print("%d", x)` — unless it already ends with one, so
+        # output is line-buffered without writing `\n` by hand each time.
+        parts = self._split_top_level(args)
+        first = parts[0].strip()
+        if re.match(r'^".*"$', first):
+            inner = first[1:-1]
+            if not inner.endswith('\\n'):
+                inner += '\\n'
+            new_args = ', '.join([f'"{inner}"'] + [p.strip() for p in parts[1:]])
+            return (f'{indent}printf({new_args})', False)
         return (f'{indent}printf({args})', False)
 
     # ── transform: struct definition ──────────────────────────────

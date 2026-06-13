@@ -82,15 +82,15 @@ def test_map_rhs_rewrite_runs(run_simplc):
 
 
 # ── §16.3 print() with explicit \\n already in string ─────────────
-# BUG: print("hello\n") produces printf("hello\n\n") — double newline.
-# The `print` shorthand always appends \n; a user who adds their own
-# \n gets two.
+# print() appends \n automatically, but a string that already ends with \n
+# is left alone — no double newline (issue #28).
 
-def test_print_always_appends_newline(transpile):
-    """print() always appends \\n, even if the string already ends with \\n."""
+def test_print_no_double_newline(transpile):
+    """print("line\\n") must not become printf("line\\n\\n")."""
     src = 'fn main() -> int:\n    print("line\\n")\n    return 0\n'
     c = transpile(src)
-    assert 'printf("line\\n\\n");' in c
+    assert 'printf("line\\n");' in c
+    assert 'line\\n\\n' not in c
 
 
 # ── §16.4 for-range with negative start value ─────────────────────
